@@ -42,12 +42,16 @@ Install dependencies:
 pip install aiavatar uvicorn fastapi websockets
 ```
 
-In `openclaw.py`, set your tokens:
+Create `.env` from the example and set your tokens:
 
-```python
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"      # For STT and TTS
-OPENCLAW_TOKEN = "YOUR_OPENCLAW_TOKEN"       # Must match the token in OpenClaw gateway config
-OPENCLAW_BASE_URL = "http://127.0.0.1:18789/v1"
+```sh
+cp .env.example .env
+```
+
+```env
+OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+OPENCLAW_TOKEN=YOUR_OPENCLAW_TOKEN
+OPENCLAW_BASE_URL=http://127.0.0.1:18789/v1
 ```
 
 ## Run
@@ -55,7 +59,7 @@ OPENCLAW_BASE_URL = "http://127.0.0.1:18789/v1"
 Start OpenClaw first, then launch the server:
 
 ```sh
-python openclaw.py
+python server.py
 ```
 
 ## Browser Setup
@@ -172,9 +176,9 @@ pip install cryptography
 python cert.py 192.168.1.123
 ```
 
-Set the paths to the generated certificate and key in `openclaw.py`, then start the server to enable HTTPS access.
+Set the paths to the generated certificate and key in `.env`, then start the server to enable HTTPS access.
 
-```python
-SSL_CERT_PATH = "192.168.1.123.pem"
-SSL_KEY_PATH = "192.168.1.123-key.pem"
+```env
+SSL_CERT_PATH=192.168.1.123.pem
+SSL_KEY_PATH=192.168.1.123-key.pem
 ```
