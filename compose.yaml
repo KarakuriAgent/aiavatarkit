@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     working_dir: /app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${HOST_PORT:-8000}:8000"
     env_file:
       - path: .env
         required: false
@@ -13,6 +13,8 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       AIVIS_TTS_CACHE_DIR: /app/.cache/aivis_tts
+      AIAVATAR_DB_PATH: /app/data/aiavatar.db
+      AIAVATAR_VOICE_RECORDER_DIR: /app/recorded_voices
       # If Hermes/STT run on the Mac host, use host.docker.internal in .env.
       # If Hermes/STT run in another container, point these to the container DNS name
       # and attach this service to the same Docker network.
@@ -30,6 +32,8 @@ services:
       - uv-cache:/root/.cache/uv
       - torch-cache:/root/.cache/torch
       - aivis-cache:/app/.cache/aivis_tts
+      - app-data:/app/data
+      - recorded-voices:/app/recorded_voices
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
@@ -42,3 +46,5 @@ volumes:
   uv-cache:
   torch-cache:
   aivis-cache:
+  app-data:
+  recorded-voices:

@@ -21,6 +21,8 @@ def create_aiavatar_app(settings: Settings):
         merge_request_threshold=settings.merge_request_threshold,
         use_invoke_queue=settings.use_invoke_queue,
         api_key=settings.aiavatar_api_key,
+        db_connection_str=settings.aiavatar_db_path,
+        voice_recorder_dir=settings.aiavatar_voice_recorder_dir,
         response_audio_chunk_size=settings.response_audio_chunk_size,
         debug=settings.debug,
     )

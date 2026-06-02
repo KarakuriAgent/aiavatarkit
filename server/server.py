@@ -1,8 +1,5 @@
-from pathlib import Path
-
 import uvicorn
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from aiavatar.admin import setup_admin_panel
 from .config import load_settings
@@ -16,7 +13,6 @@ aiavatar_app = create_aiavatar_app(settings)
 
 app = FastAPI()
 app.include_router(aiavatar_app.get_websocket_router())
-app.mount("/static", StaticFiles(directory=Path(__file__).with_name("html")), name="static")
 
 setup_admin_panel(
     app,
@@ -40,5 +36,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# open http://localhost:8000/static/vrm.html

@@ -131,6 +131,10 @@ docker compose up --build
 
 この compose 構成ではコードを image に COPY せず、`aiavatar/` と `server/` を bind mount します。Python 依存はコンテナ内の named volume `/app/.venv` に入ります。
 
+ホスト側の公開ポートを変える場合は `.env` に `HOST_PORT=8001` のように指定します。コンテナ内のアプリは常に `PORT=8000` で起動します。Docker の port mapping は `127.0.0.1:${HOST_PORT}:8000` なので、ホスト外には公開されません。
+
+Docker Compose では会話ログ DB を `/app/data/aiavatar.db`、録音ファイルを `/app/recorded_voices` に保存し、それぞれ named volume で永続化します。`docker compose down` / `up` でコンテナを作り直してもログは残ります。
+
 Hermes や STT が Mac ホスト上で動いている場合は、`.env` で以下のように指定します。
 
 ```env
@@ -144,25 +148,6 @@ Hermes が別コンテナで動いていてホストにポート公開されて�
 HERMES_BASE_URL=http://host.docker.internal:8647/v1
 ```
 
-ブラウザでは以下を開きます。
-
-```text
-http://localhost:8000/static/vrm.html
-```
-
-2D 表示を使う場合は以下です。
-
-```text
-http://localhost:8000/static/index.html
-```
-
-## Browser Setup
-
-`vrm.html` を開いたら、CONFIG メニューから右側の設定パネルを開きます。
-
-- Load tab: VRM ファイルを読み込みます。スクロールで拡大縮小、スワイプで回転、左右ボタン同時押しのスワイプで位置調整できます。
-- UI tab: 背景画像や `user_id` を設定できます。
-
 この構成では `user_id` を共通キーとして使います。StackChan 側の `config.json`、Hermes の `conversation`、`/avatar/perform` の通知先を同じ値にしてください。
 
 ```json
@@ -171,7 +156,7 @@ http://localhost:8000/static/index.html
 }
 ```
 
-ブラウザ UI では CONFIG メニューの UI tab から `user_id` を確認・変更できます。StackChan を使う場合は、StackChan 側の `config.json` の `user_id` を固定してください。
+StackChan 側の `config.json` の `user_id` を固定してください。
 
 ## Push Notification
 

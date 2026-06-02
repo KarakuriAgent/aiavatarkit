@@ -72,6 +72,8 @@ class Settings:
 
     aiavatar_admin_user: str
     aiavatar_api_key: str | None
+    aiavatar_db_path: str
+    aiavatar_voice_recorder_dir: str
     host: str
     port: int
     ssl_cert_path: str | None
@@ -121,6 +123,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         aivis_tts_timeout=float(os.environ.get("AIVIS_TTS_TIMEOUT", "30")),
         aiavatar_admin_user=os.environ.get("AIAVATAR_ADMIN_USER", "admin"),
         aiavatar_api_key=optional_env("AIAVATAR_API_KEY"),
+        aiavatar_db_path=os.environ.get("AIAVATAR_DB_PATH", "aiavatar.db"),
+        aiavatar_voice_recorder_dir=os.environ.get("AIAVATAR_VOICE_RECORDER_DIR", "recorded_voices"),
         host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "8000")),
         ssl_cert_path=optional_env("SSL_CERT_PATH"),

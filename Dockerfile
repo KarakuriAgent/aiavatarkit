@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     curl \
+    ffmpeg \
     git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv==0.7.3
