@@ -1,5 +1,7 @@
 # pip install aiavatar uvicorn fastapi websockets
 import logging
+import os
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -10,14 +12,44 @@ from aiavatar.sts.llm.chatgpt import ChatGPTService
 from aiavatar.sts.tts.openai import OpenAISpeechSynthesizer
 from aiavatar.admin import setup_admin_panel
 
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
-OPENCLAW_TOKEN = "YOUR_OPENCLAW_TOKEN"
-OPENCLAW_BASE_URL = "http://127.0.0.1:18789/v1"
-AIAVATAR_ADMIN_USER = "admin"
-AIAVATAR_API_KEY = None     # Set API key if you protect this service
-OPENCLAW_REQUEST_PREFIX = "[channel:voice]"
-SSL_CERT_PATH = None
-SSL_KEY_PATH = None
+
+def load_env_file(path: Path):
+    if not path.exists():
+        return
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in (chr(34), chr(39)):
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+def optional_env(name: str):
+    value = os.environ.get(name)
+    return value if value else None
+
+
+load_env_file(Path(__file__).with_name(".env"))
+
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+OPENCLAW_TOKEN = os.environ["OPENCLAW_TOKEN"]
+OPENCLAW_BASE_URL = os.environ.get("OPENCLAW_BASE_URL", "http://127.0.0.1:18789/v1")
+OPENCLAW_MODEL = os.environ.get("OPENCLAW_MODEL", "openclaw")
+OPENCLAW_REQUEST_PREFIX = os.environ.get("OPENCLAW_REQUEST_PREFIX", "[channel:voice]")
+
+STT_LANGUAGE = os.environ.get("STT_LANGUAGE", "ja")
+TTS_SPEAKER = os.environ.get("TTS_SPEAKER", "coral")
+
+AIAVATAR_ADMIN_USER = os.environ.get("AIAVATAR_ADMIN_USER", "admin")
+AIAVATAR_API_KEY = optional_env("AIAVATAR_API_KEY")
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8000"))
+SSL_CERT_PATH = optional_env("SSL_CERT_PATH")
+SSL_KEY_PATH = optional_env("SSL_KEY_PATH")
 
 logger = logging.getLogger("aiavatar")
 logger.setLevel(logging.INFO)
@@ -33,7 +65,7 @@ logger.addHandler(streamHandler)
 
 stt = OpenAISpeechRecognizer(
     openai_api_key=OPENAI_API_KEY,
-    language="ja",      # <- Set `en` for English
+    language=STT_LANGUAGE,
 )
 
 # # We recommend using Azure for dramatically faster performance
@@ -58,7 +90,7 @@ vad = SileroStreamSpeechDetector(
 llm = ChatGPTService(
     openai_api_key=OPENCLAW_TOKEN,
     base_url=OPENCLAW_BASE_URL,
-    model="openclaw",
+    model=OPENCLAW_MODEL,
 )
 
 # Add the instruction for voice channel
@@ -88,7 +120,7 @@ def edit_chat_completion_params(chat_completion_params: dict, context_id: str, u
 
 tts = OpenAISpeechSynthesizer(
     openai_api_key=OPENAI_API_KEY,
-    speaker="coral"
+    speaker=TTS_SPEAKER
 )
 
 # # VOICEVOX for Japanese users
@@ -171,8 +203,8 @@ setup_admin_panel(
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000,
+        host=HOST,
+        port=PORT,
         ssl_certfile=SSL_CERT_PATH,
         ssl_keyfile=SSL_KEY_PATH
     )
