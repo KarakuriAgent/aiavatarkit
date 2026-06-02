@@ -39,14 +39,22 @@ def bool_env(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
-    openai_api_key: str
-    openclaw_token: str
-    openclaw_base_url: str
-    openclaw_model: str
-    openclaw_request_prefix: str
+    openai_api_key: str | None
+    hermes_api_key: str
+    hermes_base_url: str
+    hermes_model: str
+    hermes_request_prefix: str
+    hermes_conversation_id_source: str
+    hermes_store: bool
 
     stt_provider: str
+    stt_base_url: str | None
+    stt_api_key: str | None
+    stt_model: str
     stt_language: str
+    stt_min_data_length: int
+    stt_sample_rate: int
+    stt_timeout: float
 
     vad_provider: str
     vad_segment_silence_threshold: float
@@ -56,6 +64,11 @@ class Settings:
 
     tts_provider: str
     tts_speaker: str
+    aivis_api_key: str | None
+    aivis_model_uuid: str
+    aivis_tts_url: str
+    aivis_tts_cache_dir: str | None
+    aivis_tts_timeout: float
 
     aiavatar_admin_user: str
     aiavatar_api_key: str | None
@@ -66,6 +79,7 @@ class Settings:
 
     merge_request_threshold: float
     use_invoke_queue: bool
+    response_audio_chunk_size: int | None
     debug: bool
 
 
@@ -79,19 +93,32 @@ def load_settings(env_path: Path | None = None) -> Settings:
         load_env_file(server_dir / ".env")
 
     return Settings(
-        openai_api_key=required_env("OPENAI_API_KEY"),
-        openclaw_token=required_env("OPENCLAW_TOKEN"),
-        openclaw_base_url=os.environ.get("OPENCLAW_BASE_URL", "http://127.0.0.1:18789/v1"),
-        openclaw_model=os.environ.get("OPENCLAW_MODEL", "openclaw"),
-        openclaw_request_prefix=os.environ.get("OPENCLAW_REQUEST_PREFIX", "[channel:voice]"),
-        stt_provider=os.environ.get("STT_PROVIDER", "openai"),
+        openai_api_key=optional_env("OPENAI_API_KEY"),
+        hermes_api_key=required_env("HERMES_API_KEY"),
+        hermes_base_url=os.environ.get("HERMES_BASE_URL", "http://127.0.0.1:8642/v1"),
+        hermes_model=os.environ.get("HERMES_MODEL", "hermes-agent"),
+        hermes_request_prefix=os.environ.get("HERMES_REQUEST_PREFIX", "[channel:voice]"),
+        hermes_conversation_id_source=os.environ.get("HERMES_CONVERSATION_ID_SOURCE", "user_id"),
+        hermes_store=bool_env("HERMES_STORE", True),
+        stt_provider=os.environ.get("STT_PROVIDER", "whisper_compatible"),
+        stt_base_url=optional_env("STT_BASE_URL"),
+        stt_api_key=optional_env("STT_API_KEY"),
+        stt_model=os.environ.get("STT_MODEL", "whisperkit"),
         stt_language=os.environ.get("STT_LANGUAGE", "ja"),
+        stt_min_data_length=int(os.environ.get("STT_MIN_DATA_LENGTH", "4096")),
+        stt_sample_rate=int(os.environ.get("STT_SAMPLE_RATE", "16000")),
+        stt_timeout=float(os.environ.get("STT_TIMEOUT", "30")),
         vad_provider=os.environ.get("VAD_PROVIDER", "silero_stream"),
         vad_segment_silence_threshold=float(os.environ.get("VAD_SEGMENT_SILENCE_THRESHOLD", "0.05")),
         vad_use_iterator=bool_env("VAD_USE_ITERATOR", True),
-        llm_provider=os.environ.get("LLM_PROVIDER", "openclaw"),
-        tts_provider=os.environ.get("TTS_PROVIDER", "openai"),
+        llm_provider=os.environ.get("LLM_PROVIDER", "hermes"),
+        tts_provider=os.environ.get("TTS_PROVIDER", "aivis"),
         tts_speaker=os.environ.get("TTS_SPEAKER", "coral"),
+        aivis_api_key=optional_env("AIVIS_API_KEY"),
+        aivis_model_uuid=os.environ.get("AIVIS_MODEL_UUID", "261d7c95-11d4-4f0a-9053-4d28d3dd87ee"),
+        aivis_tts_url=os.environ.get("AIVIS_TTS_URL", "https://api.aivis-project.com/v1/tts/synthesize"),
+        aivis_tts_cache_dir=optional_env("AIVIS_TTS_CACHE_DIR") or "aivis_tts_cache",
+        aivis_tts_timeout=float(os.environ.get("AIVIS_TTS_TIMEOUT", "30")),
         aiavatar_admin_user=os.environ.get("AIAVATAR_ADMIN_USER", "admin"),
         aiavatar_api_key=optional_env("AIAVATAR_API_KEY"),
         host=os.environ.get("HOST", "0.0.0.0"),
@@ -100,5 +127,6 @@ def load_settings(env_path: Path | None = None) -> Settings:
         ssl_key_path=optional_env("SSL_KEY_PATH"),
         merge_request_threshold=float(os.environ.get("MERGE_REQUEST_THRESHOLD", "3.0")),
         use_invoke_queue=bool_env("USE_INVOKE_QUEUE", True),
+        response_audio_chunk_size=int(os.environ.get("RESPONSE_AUDIO_CHUNK_SIZE", "8192")),
         debug=bool_env("DEBUG", True),
     )
