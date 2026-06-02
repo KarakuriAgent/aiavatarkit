@@ -70,7 +70,13 @@ class Settings:
 
 
 def load_settings(env_path: Path | None = None) -> Settings:
-    load_env_file(env_path or Path(__file__).with_name(".env"))
+    if env_path:
+        load_env_file(env_path)
+    else:
+        server_dir = Path(__file__).resolve().parent
+        project_root = server_dir.parent
+        load_env_file(project_root / ".env")
+        load_env_file(server_dir / ".env")
 
     return Settings(
         openai_api_key=required_env("OPENAI_API_KEY"),

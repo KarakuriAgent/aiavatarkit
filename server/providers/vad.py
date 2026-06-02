@@ -1,6 +1,6 @@
 from aiavatar.sts.vad.stream import SileroStreamSpeechDetector
 
-from config import Settings
+from ..config import Settings
 
 
 def create_vad(settings: Settings, stt):

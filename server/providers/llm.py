@@ -1,6 +1,6 @@
 from aiavatar.sts.llm.chatgpt import ChatGPTService
 
-from config import Settings
+from ..config import Settings
 
 
 def create_llm(settings: Settings):

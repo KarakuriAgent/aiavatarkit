@@ -1,10 +1,10 @@
 from aiavatar.adapter.websocket.server import AIAvatarWebSocketServer
 
-from config import Settings
-from providers.llm import create_llm
-from providers.stt import create_stt
-from providers.tts import create_tts
-from providers.vad import create_vad
+from .config import Settings
+from .providers.llm import create_llm
+from .providers.stt import create_stt
+from .providers.tts import create_tts
+from .providers.vad import create_vad
 
 
 def create_aiavatar_app(settings: Settings):

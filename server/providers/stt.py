@@ -1,6 +1,6 @@
 from aiavatar.sts.stt.openai import OpenAISpeechRecognizer
 
-from config import Settings
+from ..config import Settings
 
 
 def create_stt(settings: Settings):

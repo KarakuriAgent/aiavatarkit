@@ -1,6 +1,6 @@
 from aiavatar.sts.tts.openai import OpenAISpeechSynthesizer
 
-from config import Settings
+from ..config import Settings
 
 
 def create_tts(settings: Settings):

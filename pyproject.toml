@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiavatar"
+version = "0.8.17"
+description = "Building AI-based conversational avatars"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "uezo", email = "uezo@uezo.net" },
+]
+maintainers = [
+  { name = "uezo", email = "uezo@uezo.net" },
+]
+dependencies = [
+  "aiofiles>=24.1.0",
+  "fastapi>=0.115.0",
+  "httpx>=0.27.0",
+  "numpy>=2.2.3",
+  "openai>=1.55.3",
+  "silero-vad>=6.0.0",
+  "uvicorn>=0.30.0",
+  "websockets>=13.0",
+]
+
+[project.optional-dependencies]
+audio = [
+  "PyAudio>=0.2.14",
+]
+cert = [
+  "cryptography>=42.0.0",
+]
+test = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+server = "server.server:main"
+
+[project.urls]
+Homepage = "https://github.com/uezo/aiavatarkit"
+
+[tool.setuptools.packages.find]
+include = ["aiavatar*", "server*"]
+exclude = ["examples*", "tests*"]
+
+[tool.setuptools.package-data]
+aiavatar = ["admin/static/*"]
+server = ["html/**/*"]

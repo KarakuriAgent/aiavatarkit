@@ -5,9 +5,9 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from aiavatar.admin import setup_admin_panel
-from config import load_settings
-from logging_config import setup_logging
-from pipeline import create_aiavatar_app
+from .config import load_settings
+from .logging_config import setup_logging
+from .pipeline import create_aiavatar_app
 
 
 settings = load_settings()
@@ -28,7 +28,7 @@ setup_admin_panel(
 )
 
 
-if __name__ == "__main__":
+def main():
     uvicorn.run(
         app,
         host=settings.host,
@@ -36,5 +36,9 @@ if __name__ == "__main__":
         ssl_certfile=settings.ssl_cert_path,
         ssl_keyfile=settings.ssl_key_path,
     )
+
+
+if __name__ == "__main__":
+    main()
 
 # open http://localhost:8000/static/vrm.html

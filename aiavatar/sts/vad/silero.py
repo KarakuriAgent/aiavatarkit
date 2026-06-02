@@ -151,7 +151,8 @@ class SileroSpeechDetector(SpeechDetector):
                             repo_or_dir="snakers4/silero-vad",
                             model="silero_vad",
                             force_reload=False,
-                            onnx=False
+                            onnx=False,
+                            trust_repo=True,
                         )
                 else:
                     # Load default Silero VAD model
@@ -159,7 +160,8 @@ class SileroSpeechDetector(SpeechDetector):
                         repo_or_dir="snakers4/silero-vad",
                         model="silero_vad",
                         force_reload=False,
-                        onnx=False
+                        onnx=False,
+                        trust_repo=True,
                     )
                 
                 self.model_pool.append(model)

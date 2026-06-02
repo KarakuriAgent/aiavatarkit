@@ -39,13 +39,13 @@ Configure your OpenClaw `gateway` settings as follows:
 Install dependencies:
 
 ```sh
-pip install aiavatar uvicorn fastapi websockets
+uv sync
 ```
 
-Create `.env` from the example and set your tokens:
+Create `.env` at the repository root from the example and set your tokens:
 
 ```sh
-cp .env.example .env
+cp server/.env.example .env
 ```
 
 ```env
@@ -59,7 +59,7 @@ OPENCLAW_BASE_URL=http://127.0.0.1:18789/v1
 Start OpenClaw first, then launch the server:
 
 ```sh
-python server.py
+uv run server
 ```
 
 ## Browser Setup
