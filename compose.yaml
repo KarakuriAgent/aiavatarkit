@@ -1,0 +1,44 @@
+services:
+  stackchan-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      AIVIS_TTS_CACHE_DIR: /app/.cache/aivis_tts
+      # If Hermes/STT run on the Mac host, use host.docker.internal in .env.
+      # If Hermes/STT run in another container, point these to the container DNS name
+      # and attach this service to the same Docker network.
+      # Example:
+      # HERMES_BASE_URL: http://hermes:8642/v1
+      # STT_BASE_URL: http://stt:5003/v1
+    volumes:
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
+      - ./README.md:/app/README.md:ro
+      - ./LICENSE:/app/LICENSE:ro
+      - ./aiavatar:/app/aiavatar
+      - ./server:/app/server
+      - uv-venv:/app/.venv
+      - uv-cache:/root/.cache/uv
+      - torch-cache:/root/.cache/torch
+      - aivis-cache:/app/.cache/aivis_tts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - sh
+      - -c
+      - uv sync --frozen && uv run uvicorn server.server:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+volumes:
+  uv-venv:
+  uv-cache:
+  torch-cache:
+  aivis-cache:

@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.pyc
+.env
+.DS_Store
+.pytest_cache
+.mypy_cache
+.ruff_cache
+html
+htmlcov
+examples
+tests
+documents
+*.db
+aivis_tts_cache
+recorded_voices

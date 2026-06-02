@@ -123,6 +123,27 @@ Hermes、STT サーバー、Aivis Cloud API の設定を用意してから、リ
 uv run server
 ```
 
+Docker Compose で起動する場合:
+
+```sh
+docker compose up --build
+```
+
+この compose 構成ではコードを image に COPY せず、`aiavatar/` と `server/` を bind mount します。Python 依存はコンテナ内の named volume `/app/.venv` に入ります。
+
+Hermes や STT が Mac ホスト上で動いている場合は、`.env` で以下のように指定します。
+
+```env
+HERMES_BASE_URL=http://host.docker.internal:8642/v1
+STT_BASE_URL=http://host.docker.internal:5003/v1
+```
+
+Hermes が別コンテナで動いていてホストにポート公開されている場合は、公開ポートを `host.docker.internal` 経由で指定します。
+
+```env
+HERMES_BASE_URL=http://host.docker.internal:8647/v1
+```
+
 ブラウザでは以下を開きます。
 
 ```text
