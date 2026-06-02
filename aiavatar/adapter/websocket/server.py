@@ -314,11 +314,31 @@ class AIAvatarWebSocketServer(Adapter):
     async def send_response(self, aiavatar_response: AIAvatarResponse):
         session_data = self.sessions.get(aiavatar_response.session_id)
         if not session_data:
+            logger.warning(
+                "WebSocket response skipped: no session data for session=%s, type=%s",
+                aiavatar_response.session_id,
+                aiavatar_response.type,
+            )
             return
         async with session_data.send_lock:
             if aiavatar_response.session_id in self.websockets:
+                audio_length = len(aiavatar_response.audio_data) if aiavatar_response.audio_data else 0
+                logger.info(
+                    "WebSocket response send: session=%s, type=%s, has_audio=%s, audio_length=%s, voice_text=%s",
+                    aiavatar_response.session_id,
+                    aiavatar_response.type,
+                    bool(aiavatar_response.audio_data),
+                    audio_length,
+                    aiavatar_response.voice_text,
+                )
                 await self.websockets[aiavatar_response.session_id].send_text(
                     aiavatar_response.model_dump_json()
+                )
+            else:
+                logger.warning(
+                    "WebSocket response skipped: websocket not found for session=%s, type=%s",
+                    aiavatar_response.session_id,
+                    aiavatar_response.type,
                 )
 
     async def handle_response(self, response: STSResponse):

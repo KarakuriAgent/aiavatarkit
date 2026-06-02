@@ -46,6 +46,7 @@ class Settings:
     hermes_request_prefix: str
     hermes_conversation_id_source: str
     hermes_store: bool
+    hermes_reasoning_effort: str | None
 
     stt_provider: str
     stt_base_url: str | None
@@ -102,6 +103,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         hermes_request_prefix=os.environ.get("HERMES_REQUEST_PREFIX", "[channel:voice]"),
         hermes_conversation_id_source=os.environ.get("HERMES_CONVERSATION_ID_SOURCE", "user_id"),
         hermes_store=bool_env("HERMES_STORE", True),
+        hermes_reasoning_effort=optional_env("HERMES_REASONING_EFFORT"),
         stt_provider=os.environ.get("STT_PROVIDER", "whisper_compatible"),
         stt_base_url=optional_env("STT_BASE_URL"),
         stt_api_key=optional_env("STT_API_KEY"),

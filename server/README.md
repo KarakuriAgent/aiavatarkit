@@ -42,6 +42,14 @@ HERMES_API_KEY=change-me-local-dev
 
 `HERMES_MODEL` は Hermes API に渡す model ID です。Hermes docs では、実際に使われる LLM は Hermes 側の設定で決まり、API リクエストの `model` フィールドは主に OpenAI-compatible frontend 向けの model ID として扱われます。
 
+Responses API の `reasoning.effort` を request body に含めたい場合は、`.env` に `HERMES_REASONING_EFFORT` を設定します。
+
+```env
+HERMES_REASONING_EFFORT=none
+```
+
+この値を設定すると、サーバーは Hermes の `/v1/responses` に `reasoning: {"effort": "<value>"}` を送ります。未設定または空の場合は `reasoning` を送信しません。
+
 ## Session
 
 Hermes 側のセッションは Responses API の `conversation` で維持します。
@@ -98,6 +106,7 @@ HERMES_BASE_URL=http://127.0.0.1:8642/v1
 HERMES_MODEL=hermes-agent
 HERMES_REQUEST_PREFIX=[channel:voice]
 HERMES_CONVERSATION_ID_SOURCE=user_id
+HERMES_REASONING_EFFORT=none
 
 STT_PROVIDER=whisper_compatible
 STT_BASE_URL=http://127.0.0.1:5003/v1

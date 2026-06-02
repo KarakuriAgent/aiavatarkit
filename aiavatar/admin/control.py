@@ -1,6 +1,7 @@
 import logging
 import re
 from typing import Optional
+from uuid import uuid4
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 from ..sts.models import STSRequest, STSResponse
@@ -113,32 +114,70 @@ class ControlAPI:
             """
             try:
                 session_id = request.session_id or self.default_session_id
+                requested_session_id = session_id
                 if not session_id and request.user_id:
                     if hasattr(self.adapter, "get_session_by_user_id"):
                         session_data = self.adapter.get_session_by_user_id(request.user_id)
                         if session_data:
                             session_id = session_data.id
                 if not session_id:
+                    logger.warning(
+                        "Avatar perform requested but no active session found: user_id=%s, requested_session_id=%s",
+                        request.user_id,
+                        requested_session_id,
+                    )
                     raise HTTPException(status_code=400, detail="No active session found")
-                voice = await self.adapter.sts.tts.synthesize(text=self.remove_control_tags(request.text))
-
-                await self.adapter.stop_response(session_id, "_")
 
                 voice_text = self.remove_control_tags(request.text)
+                logger.info(
+                    "Avatar perform request: user_id=%s, requested_session_id=%s, resolved_session_id=%s, voice_text=%s",
+                    request.user_id,
+                    requested_session_id,
+                    session_id,
+                    voice_text,
+                )
+                voice = await self.adapter.sts.tts.synthesize(text=voice_text)
+                context_id = str(uuid4())
+                transaction_id = str(uuid4())
+
+                await self.adapter.stop_response(session_id, "_")
+                await self.adapter.handle_response(STSResponse(
+                    type="accepted",
+                    session_id=session_id,
+                    user_id=request.user_id,
+                    context_id=context_id,
+                    transaction_id=transaction_id,
+                    metadata={"block_barge_in": True, "source": "avatar_perform"}
+                ))
+                await self.adapter.handle_response(STSResponse(
+                    type="start",
+                    session_id=session_id,
+                    user_id=request.user_id,
+                    context_id=context_id,
+                    transaction_id=transaction_id,
+                    metadata={"source": "avatar_perform"}
+                ))
+
                 await self.adapter.handle_response(STSResponse(
                     type="chunk",
                     session_id=session_id,
+                    user_id=request.user_id,
+                    context_id=context_id,
+                    transaction_id=transaction_id,
                     text=request.text,
                     voice_text=voice_text,
                     audio_data=voice,
-                    metadata={"is_first_chunk": True}
+                    metadata={"is_first_chunk": True, "source": "avatar_perform"}
                 ))
                 await self.adapter.handle_response(STSResponse(
                     type="final",
                     session_id=session_id,
+                    user_id=request.user_id,
+                    context_id=context_id,
+                    transaction_id=transaction_id,
                     text=request.text,
                     voice_text=voice_text,
-                    metadata={}
+                    metadata={"source": "avatar_perform"}
                 ))
 
                 return APIResponse(message="Avatar performance completed successfully")

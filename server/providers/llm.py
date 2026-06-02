@@ -20,6 +20,7 @@ class HermesResponsesService(LLMService):
         request_prefix: str = "[channel:voice]",
         conversation_id_source: str = "context_id",
         store: bool = True,
+        reasoning_effort: str = None,
         system_prompt: str = None,
         model: str = "hermes-agent",
         debug: bool = False,
@@ -35,6 +36,7 @@ class HermesResponsesService(LLMService):
         self.request_prefix = request_prefix
         self.conversation_id_source = conversation_id_source
         self.store = store
+        self.reasoning_effort = reasoning_effort
 
     @property
     def dynamic_tool_name(self) -> str:
@@ -84,6 +86,9 @@ class HermesResponsesService(LLMService):
             "stream": True,
             "store": self.store,
         }
+
+        if self.reasoning_effort is not None:
+            request_body["reasoning"] = {"effort": self.reasoning_effort}
 
         if instructions := await self._get_system_prompt(context_id, user_id, system_prompt_params):
             request_body["instructions"] = instructions
@@ -163,6 +168,7 @@ def create_llm(settings: Settings):
         request_prefix=settings.hermes_request_prefix,
         conversation_id_source=settings.hermes_conversation_id_source,
         store=settings.hermes_store,
+        reasoning_effort=settings.hermes_reasoning_effort,
         debug=settings.debug,
     )
 
