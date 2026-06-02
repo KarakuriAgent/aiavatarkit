@@ -24,5 +24,6 @@ def create_aiavatar_app(settings: Settings):
         db_connection_str=settings.aiavatar_db_path,
         voice_recorder_dir=settings.aiavatar_voice_recorder_dir,
         response_audio_chunk_size=settings.response_audio_chunk_size,
+        skip_tts_channels=settings.skip_tts_channels,
         debug=settings.debug,
     )

@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List
 
 
 def load_env_file(path: Path):
@@ -35,6 +36,13 @@ def bool_env(name: str, default: bool) -> bool:
     if value is None or value == "":
         return default
     return value.lower() in ("1", "true", "yes", "on")
+
+
+def list_env(name: str, default: List[str] = None) -> List[str]:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return list(default or [])
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 @dataclass(frozen=True)
@@ -82,8 +90,23 @@ class Settings:
 
     merge_request_threshold: float
     use_invoke_queue: bool
+    skip_tts_channels: List[str]
     response_audio_chunk_size: int | None
     debug: bool
+
+    discord_sync_enabled: bool
+    discord_bot_token: str | None
+    discord_channel_id: str | None
+    discord_webhook_url: str | None
+    discord_guild_id: str | None
+    discord_user_id: str | None
+    discord_bot_id: str | None
+    discord_sync_user_id: str
+    discord_gateway_session_id: str
+    discord_identity_cache_ttl: float
+    discord_voice_message_prefix: str
+    discord_typing_indicator_enabled: bool
+    discord_typing_indicator_interval: float
 
 
 def load_settings(env_path: Path | None = None) -> Settings:
@@ -95,6 +118,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         load_env_file(project_root / ".env")
         load_env_file(server_dir / ".env")
 
+    discord_sync_user_id = os.environ.get("DISCORD_SYNC_USER_ID", "robo-kanon-stack-chan")
     return Settings(
         openai_api_key=optional_env("OPENAI_API_KEY"),
         hermes_api_key=required_env("HERMES_API_KEY"),
@@ -133,6 +157,20 @@ def load_settings(env_path: Path | None = None) -> Settings:
         ssl_key_path=optional_env("SSL_KEY_PATH"),
         merge_request_threshold=float(os.environ.get("MERGE_REQUEST_THRESHOLD", "3.0")),
         use_invoke_queue=bool_env("USE_INVOKE_QUEUE", True),
+        skip_tts_channels=list_env("SKIP_TTS_CHANNELS", ["discord"]),
         response_audio_chunk_size=int(os.environ.get("RESPONSE_AUDIO_CHUNK_SIZE", "8192")),
         debug=bool_env("DEBUG", True),
+        discord_sync_enabled=bool_env("DISCORD_SYNC_ENABLED", False),
+        discord_bot_token=optional_env("DISCORD_BOT_TOKEN"),
+        discord_channel_id=optional_env("DISCORD_CHANNEL_ID"),
+        discord_webhook_url=optional_env("DISCORD_WEBHOOK_URL"),
+        discord_guild_id=optional_env("DISCORD_GUILD_ID"),
+        discord_user_id=optional_env("DISCORD_USER_ID"),
+        discord_bot_id=optional_env("DISCORD_BOT_ID"),
+        discord_sync_user_id=discord_sync_user_id,
+        discord_gateway_session_id=os.environ.get("DISCORD_GATEWAY_SESSION_ID", f"discord:{discord_sync_user_id}"),
+        discord_identity_cache_ttl=float(os.environ.get("DISCORD_IDENTITY_CACHE_TTL", "300")),
+        discord_voice_message_prefix=os.environ.get("DISCORD_VOICE_MESSAGE_PREFIX", "🎙️ "),
+        discord_typing_indicator_enabled=bool_env("DISCORD_TYPING_INDICATOR_ENABLED", True),
+        discord_typing_indicator_interval=float(os.environ.get("DISCORD_TYPING_INDICATOR_INTERVAL", "8")),
     )

@@ -318,16 +318,19 @@ class STSPipeline:
 
             start_time = time()
             transaction_id = str(uuid4())
+            suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
 
             # Notify client that request is accepted (fire and forget to avoid blocking pipeline latency)
-            asyncio.create_task(self.handle_response(STSResponse(
-                type="accepted",
-                session_id=request.session_id,
-                transaction_id=transaction_id,
-                metadata={"block_barge_in": request.block_barge_in}
-            )))
-            for handler in self._on_accepted_handlers:
-                await handler(request)
+            if not suppress_adapter_response:
+                asyncio.create_task(self.handle_response(STSResponse(
+                    type="accepted",
+                    session_id=request.session_id,
+                    transaction_id=transaction_id,
+                    metadata={"block_barge_in": request.block_barge_in}
+                )))
+            if not suppress_adapter_response:
+                for handler in self._on_accepted_handlers:
+                    await handler(request)
 
             performance = PerformanceRecord(
                 transaction_id=transaction_id,
@@ -343,11 +346,13 @@ class STSPipeline:
 
             if request.text:
                 # Use text if exist
+                input_type = "text"
                 recognized_text = request.text
                 if self.debug:
                     logger.info(f"Use text in request: {recognized_text}")
             elif request.audio_data:
                 # Speech-to-Text
+                input_type = "audio"
                 recognized_text = (await self.stt.recognize(request.session_id, request.audio_data)).text
                 if not recognized_text:
                     if self.debug:
@@ -364,6 +369,7 @@ class STSPipeline:
                 if self.debug:
                     logger.info(f"Recognized text from request: {recognized_text}")
             else:
+                input_type = "empty"
                 recognized_text = ""    # Request without both text and audio (e.g. image only)
 
             # Insert channel tag
@@ -442,7 +448,7 @@ class STSPipeline:
             performance.context_id = request.context_id
 
             # Stop on-going response before new response
-            if is_awake and (not self.use_invoke_queue or not request.wait_in_queue):
+            if is_awake and not suppress_adapter_response and (not self.use_invoke_queue or not request.wait_in_queue):
                 await self.stop_response(request.session_id, request.context_id)
             performance.stop_response_time = time() - start_time
 
@@ -452,7 +458,7 @@ class STSPipeline:
                 user_id=request.user_id,
                 context_id=request.context_id,
                 transaction_id=transaction_id,
-                metadata={"request_text": request.text, "recognized_text": recognized_text}
+                metadata={"request_text": request.text, "recognized_text": recognized_text, "input_type": input_type}
             )
 
             # LLM

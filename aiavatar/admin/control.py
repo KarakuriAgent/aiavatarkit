@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
@@ -21,6 +21,24 @@ class APIResponse(BaseModel):
         ..., 
         example="Message from API", 
         description="Success message from API operation"
+    )
+
+
+class ChatResponse(APIResponse):
+    text: Optional[str] = Field(
+        default=None,
+        example="こんにちは！",
+        description="Response text including control tags when available"
+    )
+    voice_text: Optional[str] = Field(
+        default=None,
+        example="こんにちは！",
+        description="Speech/display text with control tags removed when available"
+    )
+    context_id: Optional[str] = Field(
+        default=None,
+        example="context_001",
+        description="Conversation context ID used by AIAvatarKit"
     )
 
 
@@ -68,6 +86,98 @@ class ChatRequest(BaseModel):
         example="user_001",
         description="User Id for conversation context management (e.g., per-user memory)"
     )
+    channel: Optional[str] = Field(
+        default=None,
+        example="discord",
+        description="Input channel name used by the conversation processor"
+    )
+    delivery: Literal["avatar", "text"] = Field(
+        default="avatar",
+        description="Response delivery mode. 'avatar' sends responses to the adapter; 'text' returns text only."
+    )
+    wait_in_queue: bool = Field(
+        default=True,
+        description="When invoke queue is enabled, wait behind pending requests instead of interrupting."
+    )
+
+
+async def process_conversation_request(
+    adapter: Adapter,
+    request: ChatRequest,
+    *,
+    default_session_id: str = None,
+) -> ChatResponse:
+    session_id = request.session_id or default_session_id
+
+    if request.delivery == "text":
+        user_id = request.user_id
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id is required for text delivery")
+
+        session_id = session_id or f"text:{user_id}"
+        channel = request.channel or "text"
+
+        # Text delivery must never synthesize audio. Make this true even if the
+        # caller forgot to configure STSPipeline.skip_tts_channels.
+        if hasattr(adapter.sts, "skip_tts_channels") and channel not in adapter.sts.skip_tts_channels:
+            adapter.sts.skip_tts_channels.append(channel)
+
+        context_id = None
+        if hasattr(adapter.sts.vad, "get_session_data"):
+            context_id = adapter.sts.vad.get_session_data(session_id, "context_id")
+
+        response_text = ""
+        response_voice_text = ""
+        latest_context_id = context_id
+        async for resp in adapter.sts.invoke(STSRequest(
+            session_id=session_id,
+            user_id=user_id,
+            context_id=context_id,
+            text=request.text,
+            channel=channel,
+            wait_in_queue=request.wait_in_queue,
+            metadata={"source": channel, "delivery": "text", "suppress_adapter_response": True}
+        )):
+            if resp.type == "start":
+                latest_context_id = resp.context_id
+                if hasattr(adapter.sts.vad, "set_session_data"):
+                    adapter.sts.vad.set_session_data(session_id, "context_id", resp.context_id, create_session=True)
+            elif resp.type == "chunk":
+                response_text += resp.text or ""
+                response_voice_text += resp.voice_text or ""
+                latest_context_id = resp.context_id or latest_context_id
+            elif resp.type == "final":
+                response_text = resp.text or response_text
+                response_voice_text = resp.voice_text or response_voice_text
+                latest_context_id = resp.context_id or latest_context_id
+            elif resp.type == "error":
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(resp.metadata or {}).get("error", "Error in processing conversation")
+                )
+
+        return ChatResponse(
+            message="Message processed successfully",
+            text=response_text,
+            voice_text=response_voice_text,
+            context_id=latest_context_id,
+        )
+
+    context_id = adapter.sts.vad.get_session_data(session_id, "context_id") if session_id else None
+    async for resp in adapter.sts.invoke(STSRequest(
+        session_id=session_id,
+        user_id=request.user_id,
+        context_id=context_id,
+        text=request.text,
+        channel=request.channel,
+        wait_in_queue=request.wait_in_queue,
+    )):
+        if resp.type == "start":
+            if session_id:
+                adapter.sts.vad.set_session_data(session_id, "context_id", resp.context_id)
+        await adapter.handle_response(resp)
+
+    return ChatResponse(message="Message processed successfully")
 
 
 class ControlAPI:
@@ -202,7 +312,7 @@ class ControlAPI:
                 500: {"description": "Internal server error"}
             }
         )
-        async def processor_chat(request: ChatRequest) -> APIResponse:
+        async def processor_chat(request: ChatRequest) -> ChatResponse:
             """
             Send a text message to the conversation processing pipeline.
             
@@ -216,15 +326,11 @@ class ControlAPI:
             the full conversation flow including context management and response generation.
             """
             try:
-                session_id = request.session_id or self.default_session_id
-                context_id = self.adapter.sts.vad.get_session_data(session_id, "context_id") if session_id else None
-                async for resp in self.adapter.sts.invoke(STSRequest(session_id=session_id, user_id=request.user_id, context_id=context_id, text=request.text)):
-                    if resp.type == "start":
-                        if session_id:
-                            self.adapter.sts.vad.set_session_data(session_id, "context_id", resp.context_id)
-                    await self.adapter.handle_response(resp)
-
-                return APIResponse(message="Message processed successfully")
+                return await process_conversation_request(
+                    self.adapter,
+                    request,
+                    default_session_id=self.default_session_id,
+                )
             
             except HTTPException:
                 raise

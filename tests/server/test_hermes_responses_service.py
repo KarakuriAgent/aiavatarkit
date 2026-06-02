@@ -82,6 +82,42 @@ def test_load_settings_reads_hermes_reasoning_effort(tmp_path, monkeypatch):
     assert settings.hermes_reasoning_effort == "none"
 
 
+def test_load_settings_reads_discord_and_skip_tts_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("DISCORD_USER_ID", raising=False)
+    monkeypatch.delenv("DISCORD_BOT_ID", raising=False)
+    monkeypatch.delenv("SKIP_TTS_CHANNELS", raising=False)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "HERMES_API_KEY=test-key",
+                "DISCORD_SYNC_ENABLED=true",
+                "DISCORD_USER_ID=111",
+                "DISCORD_BOT_ID=222",
+                "DISCORD_SYNC_USER_ID=robo-kanon-stack-chan",
+                'DISCORD_VOICE_MESSAGE_PREFIX="🎙️ "',
+                "DISCORD_TYPING_INDICATOR_ENABLED=true",
+                "DISCORD_TYPING_INDICATOR_INTERVAL=8",
+                "SKIP_TTS_CHANNELS=discord,linebot",
+            ]
+        )
+    )
+
+    settings = load_settings(env_path)
+
+    assert settings.discord_sync_enabled is True
+    assert settings.discord_user_id == "111"
+    assert settings.discord_bot_id == "222"
+    assert settings.discord_sync_user_id == "robo-kanon-stack-chan"
+    assert settings.discord_gateway_session_id == "discord:robo-kanon-stack-chan"
+    assert settings.discord_voice_message_prefix == "🎙️ "
+    assert settings.discord_typing_indicator_enabled is True
+    assert settings.discord_typing_indicator_interval == 8
+    assert settings.skip_tts_channels == ["discord", "linebot"]
+
+
 @pytest.mark.asyncio
 async def test_hermes_responses_service_sends_reasoning_effort(monkeypatch):
     request_body = await collect_request_body(monkeypatch, reasoning_effort="none")

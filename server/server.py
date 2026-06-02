@@ -3,6 +3,7 @@ from fastapi import FastAPI
 
 from aiavatar.admin import setup_admin_panel
 from .config import load_settings
+from .discord_gateway import setup_discord_integration
 from .logging_config import setup_logging
 from .pipeline import create_aiavatar_app
 
@@ -21,6 +22,12 @@ setup_admin_panel(
     api_key=settings.aiavatar_api_key,
     basic_auth_username=settings.aiavatar_admin_user,
     basic_auth_password=settings.aiavatar_api_key,
+)
+
+setup_discord_integration(
+    app,
+    adapter=aiavatar_app,
+    settings=settings,
 )
 
 

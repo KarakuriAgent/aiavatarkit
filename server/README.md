@@ -167,6 +167,40 @@ HERMES_BASE_URL=http://host.docker.internal:8647/v1
 
 StackChan 側の `config.json` の `user_id` を固定してください。
 
+## Discord Sync
+
+Discord チャンネルに StackChan との音声会話ログを流し、同じ Hermes conversation に Discord からもテキストで問い合わせる場合は Discord sync を有効化します。
+
+```env
+DISCORD_SYNC_ENABLED=true
+DISCORD_BOT_TOKEN=your-discord-bot-token
+DISCORD_CHANNEL_ID=123456789012345678
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DISCORD_GUILD_ID=123456789012345678
+
+DISCORD_USER_ID=123456789012345678
+DISCORD_BOT_ID=234567890123456789
+DISCORD_SYNC_USER_ID=robo-kanon-stack-chan
+DISCORD_GATEWAY_SESSION_ID=discord:robo-kanon-stack-chan
+DISCORD_VOICE_MESSAGE_PREFIX="🎙️ "
+DISCORD_TYPING_INDICATOR_ENABLED=true
+DISCORD_TYPING_INDICATOR_INTERVAL=8
+
+SKIP_TTS_CHANNELS=discord
+```
+
+`DISCORD_USER_ID` はユーザー発話ログの webhook 表示名/avatar 解決元、`DISCORD_BOT_ID` は AI 応答ログの webhook 表示名/avatar 解決元です。サーバーは Discord API から user / guild member を取得し、webhook payload の `username` / `avatar_url` に設定します。
+
+`DISCORD_SYNC_USER_ID` は Hermes conversation に渡す AIAvatarKit `user_id` です。StackChan 側の `config.json` の `user_id` と同じ値にしてください。Discord 経由の入力は `DISCORD_GATEWAY_SESSION_ID` を疑似 session として使い、StackChan の WebSocket session には送信しません。
+
+`DISCORD_VOICE_MESSAGE_PREFIX` は StackChan 側から同期されたユーザー発話ログと AI 応答ログに付く prefix です。Discord からのテキスト入力と、その入力への AI 応答には付きません。
+
+`DISCORD_TYPING_INDICATOR_ENABLED` を有効にすると、Discord からのテキスト入力を処理している間と、StackChan 側の会話を Discord に同期している AI 応答処理中に、bot が対象チャンネルに typing indicator を出します。Discord の typing indicator は約 10 秒で消えるため、`DISCORD_TYPING_INDICATOR_INTERVAL` 秒ごとに更新します。
+
+Discord からのテキスト入力は `/conversation` の `delivery=text` 経路で処理されます。この経路は `adapter.handle_response()` を呼ばず、`channel=discord` を `skip_tts_channels` に追加するため、StackChan は喋らず AIVIS TTS も呼ばれません。
+
+Discord bot は対象チャンネルの `MESSAGE_CREATE` を Gateway で受けるため、Discord Developer Portal 側で Message Content Intent を有効化してください。Webhook 投稿は Gateway にも見えるため、サーバー側では `webhook_id` 付き message と bot message を無視してループを防ぎます。
+
 ## Push Notification
 
 Hermes の cron や tool から接続中の StackChan に発話させたい場合は、このサーバーの `/avatar/perform` を呼び出します。
