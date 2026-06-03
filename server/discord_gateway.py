@@ -342,6 +342,8 @@ class DiscordIntegration:
             metadata = response.metadata or {}
             if metadata.get("source") == "discord":
                 return
+            if metadata.get("suppress_discord_user_log"):
+                return
             await self._start_stackchan_typing(response)
             text = metadata.get("recognized_text")
             if not text:

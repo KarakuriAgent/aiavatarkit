@@ -203,12 +203,13 @@ Discord bot は対象チャンネルの `MESSAGE_CREATE` を Gateway で受け�
 
 ## Push Notification
 
-Hermes の cron や tool から接続中の StackChan に発話させたい場合は、このサーバーの `/avatar/perform` を呼び出します。
+Hermes の cron や tool から接続中の StackChan に発話させたい場合は、このサーバーの `/avatar/speak` を呼び出します。`/avatar/speak` は通知本文を Hermes に渡し、返ってきた response を通常の avatar 会話として TTS します。そのため、読み上げ内容は同じ Hermes conversation に残ります。
 
 ```text
 Hermes cron/tool
-  -> POST /avatar/perform user_id=user01
+  -> POST /avatar/speak user_id=user01
   -> AIAvatarKit server
+  -> Hermes conversation=user01
   -> WebSocket
   -> StackChan user_id=user01
 ```
@@ -216,14 +217,16 @@ Hermes cron/tool
 例:
 
 ```http
-POST http://localhost:8000/avatar/perform
+POST http://localhost:8000/avatar/speak
 Authorization: Bearer {AIAVATAR_API_KEY}
 Content-Type: application/json
 
-{"user_id": "user01", "text": "[face:joy]そろそろ休憩の時間だよ。"}
+{"user_id": "user01", "text": "そろそろ休憩の時間です。"}
 ```
 
-詳しくは [voice_push_notification_skill.md](voice_push_notification_skill.md) を参照してください。
+Discord sync が有効な場合、`/avatar/speak` の内部指示文は Discord には投稿されず、Hermes から返った bot 応答だけが webhook に流れます。
+
+`/avatar/perform` は Hermes conversation を通さず、指定 text を直接 TTS する endpoint です。履歴に残したい通知では `/avatar/speak` を使ってください。詳しくは [voice_push_notification_skill.md](voice_push_notification_skill.md) を参照してください。
 
 ## Hermes Prompt Guidance
 

@@ -1,9 +1,11 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
 from aiavatar.adapter.websocket.server import AIAvatarWebSocketServer
-from aiavatar.admin.control import ChatRequest, process_conversation_request
+from aiavatar.admin.control import ChatRequest, SpeakRequest, process_conversation_request, process_speak_request
 from aiavatar.sts.llm import LLMServiceDummy
 from aiavatar.sts.tts import SpeechSynthesizerDummy
 from aiavatar.sts.vad import SpeechDetectorDummy
@@ -19,8 +21,7 @@ class RecordingSpeechSynthesizer(SpeechSynthesizerDummy):
         return await super().synthesize(text, style_info, language)
 
 
-@pytest.mark.asyncio
-async def test_text_delivery_returns_text_without_adapter_or_tts(tmp_path):
+def create_recording_adapter(tmp_path, *, response_text="[face:joy]hello."):
     tts = RecordingSpeechSynthesizer()
     vad = SpeechDetectorDummy()
     vad_data = {}
@@ -36,12 +37,18 @@ async def test_text_delivery_returns_text_without_adapter_or_tts(tmp_path):
 
     adapter = AIAvatarWebSocketServer(
         vad=vad,
-        llm=LLMServiceDummy(response_text="[face:joy]hello."),
+        llm=LLMServiceDummy(response_text=response_text),
         tts=tts,
         db_connection_str=str(tmp_path / "aiavatar.db"),
         voice_recorder_enabled=False,
         debug=False,
     )
+    return adapter, tts, vad_data
+
+
+@pytest.mark.asyncio
+async def test_text_delivery_returns_text_without_adapter_or_tts(tmp_path):
+    adapter, tts, _vad_data = create_recording_adapter(tmp_path)
     adapter.sts.handle_response = AsyncMock()
     adapter.sts.stop_response = AsyncMock()
 
@@ -64,3 +71,51 @@ async def test_text_delivery_returns_text_without_adapter_or_tts(tmp_path):
     adapter.sts.handle_response.assert_not_called()
     adapter.sts.stop_response.assert_not_called()
     assert "discord" in adapter.sts.skip_tts_channels
+
+
+@pytest.mark.asyncio
+async def test_speak_request_uses_active_session_and_suppresses_discord_user_log(tmp_path):
+    adapter, tts, vad_data = create_recording_adapter(tmp_path, response_text="[face:joy]休憩してね。")
+    adapter.sessions["stack-session"] = SimpleNamespace(id="stack-session")
+    vad_data["stack-session"] = {"user_id": "robo-kanon-stack-chan"}
+    adapter.handle_response = AsyncMock()
+    adapter.sts.handle_response = AsyncMock()
+    adapter.sts.stop_response = AsyncMock()
+
+    response = await process_speak_request(
+        adapter,
+        SpeakRequest(
+            text="そろそろ休憩の時間です。",
+            user_id="robo-kanon-stack-chan",
+            channel="cron",
+        ),
+    )
+
+    assert response.message == "Message processed successfully"
+    assert response.text == "[face:joy]休憩してね。"
+    assert response.voice_text == "休憩してね。"
+    assert response.context_id
+    assert ("休憩してね。", {"styled_text": "[face:joy]休憩してね。", "info": {}}, None) in tts.calls
+
+    start_response = next(call.args[0] for call in adapter.handle_response.call_args_list if call.args[0].type == "start")
+    assert start_response.session_id == "stack-session"
+    assert start_response.metadata["source"] == "avatar_speak"
+    assert start_response.metadata["suppress_discord_user_log"] is True
+    assert "通知内容:" in start_response.metadata["recognized_text"]
+    assert "そろそろ休憩の時間です。" in start_response.metadata["recognized_text"]
+
+    final_response = next(call.args[0] for call in adapter.handle_response.call_args_list if call.args[0].type == "final")
+    assert final_response.metadata["source"] == "avatar_speak"
+
+
+@pytest.mark.asyncio
+async def test_speak_request_requires_active_session(tmp_path):
+    adapter, _tts, _vad_data = create_recording_adapter(tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await process_speak_request(
+            adapter,
+            SpeakRequest(text="そろそろ休憩の時間です。", user_id="robo-kanon-stack-chan"),
+        )
+
+    assert exc.value.status_code == 400

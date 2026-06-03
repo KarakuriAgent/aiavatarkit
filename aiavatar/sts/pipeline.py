@@ -452,13 +452,19 @@ class STSPipeline:
                 await self.stop_response(request.session_id, request.context_id)
             performance.stop_response_time = time() - start_time
 
+            request_metadata = request.metadata or {}
             yield STSResponse(
                 type="start",
                 session_id=request.session_id,
                 user_id=request.user_id,
                 context_id=request.context_id,
                 transaction_id=transaction_id,
-                metadata={"request_text": request.text, "recognized_text": recognized_text, "input_type": input_type}
+                metadata={
+                    **request_metadata,
+                    "request_text": request.text,
+                    "recognized_text": recognized_text,
+                    "input_type": input_type,
+                }
             )
 
             # LLM
@@ -603,7 +609,11 @@ class STSPipeline:
                     voice_text=llm_stream_chunk.voice_text,
                     language=language,
                     audio_data=audio_chunk,
-                    metadata={"is_first_chunk": is_first_chunk, "is_guardrail_triggered": True if guradrail_name else False},
+                    metadata={
+                        **request_metadata,
+                        "is_first_chunk": is_first_chunk,
+                        "is_guardrail_triggered": True if guradrail_name else False,
+                    },
                     structured_content=llm_stream_chunk.structured_content
                 )
                 is_first_chunk = False
@@ -620,7 +630,8 @@ class STSPipeline:
                 context_id=request.context_id,
                 transaction_id=transaction_id,
                 text=(request.quick_response_text or "") + response_text,
-                voice_text=(request.quick_response_voice_text or "") + (performance.response_voice_text or "")
+                voice_text=(request.quick_response_voice_text or "") + (performance.response_voice_text or ""),
+                metadata=request_metadata,
             )
 
             if self.voice_recorder_enabled:

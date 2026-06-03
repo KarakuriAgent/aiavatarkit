@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Literal, Optional
+from typing import Dict, Literal, Optional
 from uuid import uuid4
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
@@ -99,6 +99,76 @@ class ChatRequest(BaseModel):
         default=True,
         description="When invoke queue is enabled, wait behind pending requests instead of interrupting."
     )
+    metadata: Optional[Dict] = Field(
+        default=None,
+        description="Internal metadata passed to the conversation processor"
+    )
+
+
+class SpeakRequest(BaseModel):
+    """
+    SpeakRequest contains an external notification that should be rewritten by
+    the conversation model, stored in the active conversation, and spoken by the avatar.
+    """
+    text: str = Field(
+        ...,
+        example="そろそろ休憩の時間です。",
+        description="External notification text to convert into a spoken avatar response"
+    )
+    session_id: Optional[str] = Field(
+        default=None,
+        example="local_session",
+        description="Session Id to route the spoken response to a specific client"
+    )
+    user_id: Optional[str] = Field(
+        default=None,
+        example="user_001",
+        description="User Id to resolve the active session and conversation"
+    )
+    channel: Optional[str] = Field(
+        default="cron",
+        example="cron",
+        description="Input channel name used by the conversation processor"
+    )
+    wait_in_queue: bool = Field(
+        default=True,
+        description="When invoke queue is enabled, wait behind pending requests instead of interrupting."
+    )
+
+
+def build_speak_prompt(text: str) -> str:
+    return (
+        "外部通知として以下の内容をユーザーに伝えてください。\n"
+        "返答はそのまま音声で読み上げられます。\n"
+        "通知本文だけを短く自然な日本語で返してください。\n"
+        "説明、前置き、引用符、箇条書き、Markdownは使わないでください。\n\n"
+        f"通知内容:\n{text}"
+    )
+
+
+def resolve_active_session_id(adapter: Adapter, *, session_id: str = None, user_id: str = None) -> str:
+    resolved_session_id = session_id
+    if not resolved_session_id and user_id and hasattr(adapter, "get_session_by_user_id"):
+        session_data = adapter.get_session_by_user_id(user_id)
+        if session_data:
+            resolved_session_id = session_data.id
+    if not resolved_session_id:
+        logger.warning(
+            "No active session found: user_id=%s, requested_session_id=%s",
+            user_id,
+            session_id,
+        )
+        raise HTTPException(status_code=400, detail="No active session found")
+    return resolved_session_id
+
+
+def resolve_user_id(adapter: Adapter, *, session_id: str = None, user_id: str = None) -> str:
+    resolved_user_id = user_id
+    if not resolved_user_id and session_id and hasattr(adapter.sts.vad, "get_session_data"):
+        resolved_user_id = adapter.sts.vad.get_session_data(session_id, "user_id")
+    if not resolved_user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    return resolved_user_id
 
 
 async def process_conversation_request(
@@ -136,7 +206,12 @@ async def process_conversation_request(
             text=request.text,
             channel=channel,
             wait_in_queue=request.wait_in_queue,
-            metadata={"source": channel, "delivery": "text", "suppress_adapter_response": True}
+            metadata={
+                **(request.metadata or {}),
+                "source": channel,
+                "delivery": "text",
+                "suppress_adapter_response": True,
+            }
         )):
             if resp.type == "start":
                 latest_context_id = resp.context_id
@@ -164,6 +239,9 @@ async def process_conversation_request(
         )
 
     context_id = adapter.sts.vad.get_session_data(session_id, "context_id") if session_id else None
+    response_text = ""
+    response_voice_text = ""
+    latest_context_id = context_id
     async for resp in adapter.sts.invoke(STSRequest(
         session_id=session_id,
         user_id=request.user_id,
@@ -171,13 +249,58 @@ async def process_conversation_request(
         text=request.text,
         channel=request.channel,
         wait_in_queue=request.wait_in_queue,
+        metadata=request.metadata,
     )):
         if resp.type == "start":
+            latest_context_id = resp.context_id
             if session_id:
                 adapter.sts.vad.set_session_data(session_id, "context_id", resp.context_id)
+        elif resp.type == "chunk":
+            response_text += resp.text or ""
+            response_voice_text += resp.voice_text or ""
+            latest_context_id = resp.context_id or latest_context_id
+        elif resp.type == "final":
+            response_text = resp.text or response_text
+            response_voice_text = resp.voice_text or response_voice_text
+            latest_context_id = resp.context_id or latest_context_id
         await adapter.handle_response(resp)
 
-    return ChatResponse(message="Message processed successfully")
+    return ChatResponse(
+        message="Message processed successfully",
+        text=response_text or None,
+        voice_text=response_voice_text or None,
+        context_id=latest_context_id,
+    )
+
+
+async def process_speak_request(
+    adapter: Adapter,
+    request: SpeakRequest,
+    *,
+    default_session_id: str = None,
+) -> ChatResponse:
+    session_id = resolve_active_session_id(
+        adapter,
+        session_id=request.session_id or default_session_id,
+        user_id=request.user_id,
+    )
+    user_id = resolve_user_id(adapter, session_id=session_id, user_id=request.user_id)
+    return await process_conversation_request(
+        adapter,
+        ChatRequest(
+            text=build_speak_prompt(request.text),
+            session_id=session_id,
+            user_id=user_id,
+            channel=request.channel or "cron",
+            delivery="avatar",
+            wait_in_queue=request.wait_in_queue,
+            metadata={
+                "source": "avatar_speak",
+                "suppress_discord_user_log": True,
+                "speak_text": request.text,
+            },
+        ),
+    )
 
 
 class ControlAPI:
@@ -223,20 +346,12 @@ class ControlAPI:
             Example: "[face:joy]Hello there! [animation:wave_hands]Nice to meet you!"
             """
             try:
-                session_id = request.session_id or self.default_session_id
-                requested_session_id = session_id
-                if not session_id and request.user_id:
-                    if hasattr(self.adapter, "get_session_by_user_id"):
-                        session_data = self.adapter.get_session_by_user_id(request.user_id)
-                        if session_data:
-                            session_id = session_data.id
-                if not session_id:
-                    logger.warning(
-                        "Avatar perform requested but no active session found: user_id=%s, requested_session_id=%s",
-                        request.user_id,
-                        requested_session_id,
-                    )
-                    raise HTTPException(status_code=400, detail="No active session found")
+                requested_session_id = request.session_id or self.default_session_id
+                session_id = resolve_active_session_id(
+                    self.adapter,
+                    session_id=requested_session_id,
+                    user_id=request.user_id,
+                )
 
                 voice_text = self.remove_control_tags(request.text)
                 logger.info(
@@ -292,11 +407,50 @@ class ControlAPI:
 
                 return APIResponse(message="Avatar performance completed successfully")
             
+            except HTTPException:
+                raise
             except Exception as ex:
                 logger.exception(f"Error performing avatar actions")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal server error while performing avatar actions"
+                )
+
+        @router.post(
+            "/avatar/speak",
+            tags=["Avatar Control"],
+            summary="Speak external notification through conversation",
+            description="Send an external notification to the conversation model, store the generated response, and speak it through the avatar",
+            response_description="Notification speech completed successfully",
+            responses={
+                200: {"description": "Notification speech completed successfully"},
+                400: {"description": "No active session found"},
+                422: {"description": "Invalid message format"},
+                500: {"description": "Internal server error"}
+            }
+        )
+        async def post_avatar_speak(request: SpeakRequest) -> ChatResponse:
+            """
+            Convert an external notification into a model response and speak it.
+
+            The generated response is delivered through the normal avatar
+            conversation path, so it is stored in the same conversation and is
+            synthesized by the existing TTS pipeline.
+            """
+            try:
+                return await process_speak_request(
+                    self.adapter,
+                    request,
+                    default_session_id=self.default_session_id,
+                )
+
+            except HTTPException:
+                raise
+            except Exception as ex:
+                logger.error(f"Error processing avatar speak request: {ex}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error while processing avatar speak request"
                 )
 
         @router.post(

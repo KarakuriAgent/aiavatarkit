@@ -291,6 +291,35 @@ async def test_discord_integration_does_not_log_discord_source_as_voice():
 
 
 @pytest.mark.asyncio
+async def test_discord_integration_suppresses_internal_speak_prompt_log():
+    adapter = FakeAdapter()
+    webhook = RecordingWebhook()
+    integration = DiscordIntegration(
+        adapter=adapter,
+        settings=make_settings(),
+        resolver=FakeResolver(),
+        webhook=webhook,
+        gateway=FakeGateway(),
+    )
+    integration.register_response_hooks()
+
+    await adapter.response_handlers[0](
+        SimpleNamespace(
+            user_id="robo-kanon-stack-chan",
+            type="start",
+            metadata={
+                "source": "avatar_speak",
+                "suppress_discord_user_log": True,
+                "recognized_text": "外部通知として以下の内容をユーザーに伝えてください。",
+            },
+        ),
+        None,
+    )
+
+    assert webhook.posts == []
+
+
+@pytest.mark.asyncio
 async def test_discord_integration_prefixes_stackchan_ai_response_log():
     adapter = FakeAdapter()
     webhook = RecordingWebhook()
