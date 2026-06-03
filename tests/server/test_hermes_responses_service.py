@@ -98,6 +98,7 @@ def test_load_settings_reads_discord_and_skip_tts_settings(tmp_path, monkeypatch
                 "DISCORD_BOT_ID=222",
                 "DISCORD_SYNC_USER_ID=robo-kanon-stack-chan",
                 'DISCORD_VOICE_MESSAGE_PREFIX="🎙️ "',
+                'DISCORD_API_MESSAGE_PREFIX="📢 "',
                 "DISCORD_TYPING_INDICATOR_ENABLED=true",
                 "DISCORD_TYPING_INDICATOR_INTERVAL=8",
                 "SKIP_TTS_CHANNELS=discord,linebot",
@@ -113,6 +114,7 @@ def test_load_settings_reads_discord_and_skip_tts_settings(tmp_path, monkeypatch
     assert settings.discord_sync_user_id == "robo-kanon-stack-chan"
     assert settings.discord_gateway_session_id == "discord:robo-kanon-stack-chan"
     assert settings.discord_voice_message_prefix == "🎙️ "
+    assert settings.discord_api_message_prefix == "📢 "
     assert settings.discord_typing_indicator_enabled is True
     assert settings.discord_typing_indicator_interval == 8
     assert settings.skip_tts_channels == ["discord", "linebot"]

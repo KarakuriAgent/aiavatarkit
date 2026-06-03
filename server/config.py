@@ -105,6 +105,7 @@ class Settings:
     discord_gateway_session_id: str
     discord_identity_cache_ttl: float
     discord_voice_message_prefix: str
+    discord_api_message_prefix: str
     discord_typing_indicator_enabled: bool
     discord_typing_indicator_interval: float
 
@@ -119,6 +120,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         load_env_file(server_dir / ".env")
 
     discord_sync_user_id = os.environ.get("DISCORD_SYNC_USER_ID", "robo-kanon-stack-chan")
+    discord_voice_message_prefix = os.environ.get("DISCORD_VOICE_MESSAGE_PREFIX", "🎙️ ")
     return Settings(
         openai_api_key=optional_env("OPENAI_API_KEY"),
         hermes_api_key=required_env("HERMES_API_KEY"),
@@ -170,7 +172,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         discord_sync_user_id=discord_sync_user_id,
         discord_gateway_session_id=os.environ.get("DISCORD_GATEWAY_SESSION_ID", f"discord:{discord_sync_user_id}"),
         discord_identity_cache_ttl=float(os.environ.get("DISCORD_IDENTITY_CACHE_TTL", "300")),
-        discord_voice_message_prefix=os.environ.get("DISCORD_VOICE_MESSAGE_PREFIX", "🎙️ "),
+        discord_voice_message_prefix=discord_voice_message_prefix,
+        discord_api_message_prefix=os.environ.get("DISCORD_API_MESSAGE_PREFIX", discord_voice_message_prefix),
         discord_typing_indicator_enabled=bool_env("DISCORD_TYPING_INDICATOR_ENABLED", True),
         discord_typing_indicator_interval=float(os.environ.get("DISCORD_TYPING_INDICATOR_INTERVAL", "8")),
     )

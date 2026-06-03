@@ -88,6 +88,7 @@ def make_settings(**overrides):
         "discord_user_id": "111",
         "discord_bot_id": "222",
         "discord_voice_message_prefix": "🎙️ ",
+        "discord_api_message_prefix": "📢 ",
         "discord_typing_indicator_enabled": False,
         "discord_typing_indicator_interval": 8,
     }
@@ -350,6 +351,40 @@ async def test_discord_integration_prefixes_stackchan_ai_response_log():
     await asyncio.gather(*list(integration._background_tasks))
 
     assert webhook.posts[0][0] == "🎙️ どうしましたか？"
+
+
+@pytest.mark.asyncio
+async def test_discord_integration_prefixes_avatar_speak_ai_response_log_with_api_prefix():
+    adapter = FakeAdapter()
+    webhook = RecordingWebhook()
+    integration = DiscordIntegration(
+        adapter=adapter,
+        settings=make_settings(
+            discord_sync_user_id="robo-kanon-stack-chan",
+            discord_user_id="111",
+            discord_bot_id="222",
+            discord_voice_message_prefix="🎙️ ",
+            discord_api_message_prefix="📢 ",
+        ),
+        resolver=FakeResolver(),
+        webhook=webhook,
+        gateway=FakeGateway(),
+    )
+    integration.register_response_hooks()
+
+    await adapter.response_handlers[1](
+        SimpleNamespace(
+            user_id="robo-kanon-stack-chan",
+            type="final",
+            metadata={"source": "avatar_speak", "speak_text": "そろそろ休憩の時間です。"},
+            voice_text="休憩してね。",
+            text="[face:joy]休憩してね。",
+        ),
+        None,
+    )
+    await asyncio.gather(*list(integration._background_tasks))
+
+    assert webhook.posts[0][0] == "📢 休憩してね。"
 
 
 @pytest.mark.asyncio

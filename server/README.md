@@ -183,6 +183,7 @@ DISCORD_BOT_ID=234567890123456789
 DISCORD_SYNC_USER_ID=robo-kanon-stack-chan
 DISCORD_GATEWAY_SESSION_ID=discord:robo-kanon-stack-chan
 DISCORD_VOICE_MESSAGE_PREFIX="🎙️ "
+DISCORD_API_MESSAGE_PREFIX="📢 "
 DISCORD_TYPING_INDICATOR_ENABLED=true
 DISCORD_TYPING_INDICATOR_INTERVAL=8
 
@@ -193,7 +194,7 @@ SKIP_TTS_CHANNELS=discord
 
 `DISCORD_SYNC_USER_ID` は Hermes conversation に渡す AIAvatarKit `user_id` です。StackChan 側の `config.json` の `user_id` と同じ値にしてください。Discord 経由の入力は `DISCORD_GATEWAY_SESSION_ID` を疑似 session として使い、StackChan の WebSocket session には送信しません。
 
-`DISCORD_VOICE_MESSAGE_PREFIX` は StackChan 側から同期されたユーザー発話ログと AI 応答ログに付く prefix です。Discord からのテキスト入力と、その入力への AI 応答には付きません。
+`DISCORD_VOICE_MESSAGE_PREFIX` は StackChan 側から同期されたユーザー発話ログと通常の AI 応答ログに付く prefix です。`DISCORD_API_MESSAGE_PREFIX` は `/avatar/speak` など API 経由の外部通知に対する AI 応答ログに付く prefix です。未設定の場合は `DISCORD_VOICE_MESSAGE_PREFIX` と同じ値を使います。Discord からのテキスト入力と、その入力への AI 応答には付きません。
 
 `DISCORD_TYPING_INDICATOR_ENABLED` を有効にすると、Discord からのテキスト入力を処理している間と、StackChan 側の会話を Discord に同期している AI 応答処理中に、bot が対象チャンネルに typing indicator を出します。Discord の typing indicator は約 10 秒で消えるため、`DISCORD_TYPING_INDICATOR_INTERVAL` 秒ごとに更新します。
 
@@ -224,7 +225,7 @@ Content-Type: application/json
 {"user_id": "user01", "text": "そろそろ休憩の時間です。"}
 ```
 
-Discord sync が有効な場合、`/avatar/speak` の内部指示文は Discord には投稿されず、Hermes から返った bot 応答だけが webhook に流れます。
+Discord sync が有効な場合、`/avatar/speak` の内部指示文は Discord には投稿されず、Hermes から返った bot 応答だけが webhook に流れます。この bot 応答には `DISCORD_API_MESSAGE_PREFIX` が付きます。Hermes cron/tool 由来の通知として見せたい場合は `.env` に `DISCORD_API_MESSAGE_PREFIX="📢 "` を設定してください。
 
 `/avatar/perform` は Hermes conversation を通さず、指定 text を直接 TTS する endpoint です。履歴に残したい通知では `/avatar/speak` を使ってください。詳しくは [voice_push_notification_skill.md](voice_push_notification_skill.md) を参照してください。
 

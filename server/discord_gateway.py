@@ -365,8 +365,13 @@ class DiscordIntegration:
             text = response.voice_text or remove_control_tags(response.text)
             if not text:
                 return
-            text = f"{self.settings.discord_voice_message_prefix}{text}"
+            text = f"{self._ai_response_prefix(metadata)}{text}"
             self._schedule(self._post_as(self.settings.discord_bot_id, text, fallback_name="Bot"))
+
+    def _ai_response_prefix(self, metadata: dict) -> str:
+        if metadata.get("source") == "avatar_speak" or metadata.get("speak_text") is not None:
+            return self.settings.discord_api_message_prefix
+        return self.settings.discord_voice_message_prefix
 
     def _schedule(self, coro):
         task = asyncio.create_task(coro)
