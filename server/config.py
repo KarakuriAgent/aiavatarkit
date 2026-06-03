@@ -69,6 +69,24 @@ class Settings:
     vad_segment_silence_threshold: float
     vad_use_iterator: bool
 
+    voice_auth_enabled: bool
+    voice_auth_provider: str
+    voice_auth_base_url: str | None
+    voice_auth_api_key: str | None
+    voice_auth_model_path: str | None
+    voice_auth_model_repo: str
+    voice_auth_auto_download_model: bool
+    voice_auth_profile_dir: str
+    voice_auth_enrollment_dir: str
+    voice_auth_threshold: float
+    voice_auth_min_duration: float
+    voice_auth_sample_rate: int
+    voice_auth_require_user_id: bool
+    voice_auth_allow_identification: bool
+    voice_auth_allowed_users: List[str]
+    voice_auth_fail_open: bool
+    voice_auth_apply_cmn: bool
+
     llm_provider: str
 
     tts_provider: str
@@ -141,6 +159,23 @@ def load_settings(env_path: Path | None = None) -> Settings:
         vad_provider=os.environ.get("VAD_PROVIDER", "silero_stream"),
         vad_segment_silence_threshold=float(os.environ.get("VAD_SEGMENT_SILENCE_THRESHOLD", "0.05")),
         vad_use_iterator=bool_env("VAD_USE_ITERATOR", True),
+        voice_auth_enabled=bool_env("VOICE_AUTH_ENABLED", False),
+        voice_auth_provider=os.environ.get("VOICE_AUTH_PROVIDER", "wespeaker_mlx"),
+        voice_auth_base_url=optional_env("VOICE_AUTH_BASE_URL"),
+        voice_auth_api_key=optional_env("VOICE_AUTH_API_KEY"),
+        voice_auth_model_path=optional_env("VOICE_AUTH_MODEL_PATH") or "models/wespeaker-voxceleb-resnet34-LM-mlx",
+        voice_auth_model_repo=os.environ.get("VOICE_AUTH_MODEL_REPO", "Landon41/wespeaker-voxceleb-resnet34-LM-mlx"),
+        voice_auth_auto_download_model=bool_env("VOICE_AUTH_AUTO_DOWNLOAD_MODEL", True),
+        voice_auth_profile_dir=os.environ.get("VOICE_AUTH_PROFILE_DIR", "data/voice_profiles"),
+        voice_auth_enrollment_dir=os.environ.get("VOICE_AUTH_ENROLLMENT_DIR", "data/voice_auth_enrollment"),
+        voice_auth_threshold=float(os.environ.get("VOICE_AUTH_THRESHOLD", "0.70")),
+        voice_auth_min_duration=float(os.environ.get("VOICE_AUTH_MIN_DURATION", "1.2")),
+        voice_auth_sample_rate=int(os.environ.get("VOICE_AUTH_SAMPLE_RATE", "16000")),
+        voice_auth_require_user_id=bool_env("VOICE_AUTH_REQUIRE_USER_ID", True),
+        voice_auth_allow_identification=bool_env("VOICE_AUTH_ALLOW_IDENTIFICATION", False),
+        voice_auth_allowed_users=list_env("VOICE_AUTH_ALLOWED_USERS"),
+        voice_auth_fail_open=bool_env("VOICE_AUTH_FAIL_OPEN", False),
+        voice_auth_apply_cmn=bool_env("VOICE_AUTH_APPLY_CMN", True),
         llm_provider=os.environ.get("LLM_PROVIDER", "hermes"),
         tts_provider=os.environ.get("TTS_PROVIDER", "aivis"),
         tts_speaker=os.environ.get("TTS_SPEAKER", "coral"),

@@ -13,6 +13,18 @@ setup_logging()
 aiavatar_app = create_aiavatar_app(settings)
 
 app = FastAPI()
+
+
+@app.get("/health")
+async def health():
+    return {
+        "ok": True,
+        "mode": "conversation",
+        "voice_auth_enabled": settings.voice_auth_enabled,
+        "voice_auth_provider": settings.voice_auth_provider if settings.voice_auth_enabled else None,
+    }
+
+
 app.include_router(aiavatar_app.get_websocket_router())
 
 setup_admin_panel(

@@ -18,6 +18,7 @@ from ...sts.tts import SpeechSynthesizer
 from ...sts.session_state_manager import SessionStateManager
 from ...sts.performance_recorder import PerformanceRecorder
 from ...sts.voice_recorder import VoiceRecorder
+from ...sts.voice_auth import VoiceAuthenticator
 from ..models import AvatarControlRequest, AIAvatarRequest, AIAvatarResponse
 from ..base import Adapter
 
@@ -53,6 +54,7 @@ class AIAvatarWebSocketServer(Adapter):
         stt: SpeechRecognizer = None,
         llm: LLMService = None,
         tts: SpeechSynthesizer = None,
+        voice_auth: VoiceAuthenticator = None,
 
         # STS Pipeline params for default components
         vad_volume_db_threshold: float = -50.0,
@@ -134,6 +136,7 @@ class AIAvatarWebSocketServer(Adapter):
             voice_recorder=voice_recorder,
             voice_recorder_enabled=voice_recorder_enabled,
             voice_recorder_dir=voice_recorder_dir,
+            voice_auth=voice_auth,
             invoke_queue_idle_timeout=invoke_queue_idle_timeout,
             invoke_timeout=invoke_timeout,
             use_invoke_queue=use_invoke_queue,

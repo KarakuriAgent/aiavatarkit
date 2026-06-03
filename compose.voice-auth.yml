@@ -1,5 +1,5 @@
 services:
-  stackchan-server:
+  voice-auth-server:
     build:
       context: .
       dockerfile: Dockerfile
@@ -12,18 +12,11 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      AIVIS_TTS_CACHE_DIR: /app/.cache/aivis_tts
       AIAVATAR_DB_PATH: /app/data/aiavatar.db
-      AIAVATAR_VOICE_RECORDER_DIR: /app/recorded_voices
-      VOICE_AUTH_BASE_URL: ${VOICE_AUTH_BASE_URL:-http://host.docker.internal:8765}
+      VOICE_AUTH_PROVIDER: http
+      VOICE_AUTH_BASE_URL: http://host.docker.internal:8765
       VOICE_AUTH_PROFILE_DIR: /app/data/voice_profiles
       VOICE_AUTH_ENROLLMENT_DIR: /app/data/voice_auth_enrollment
-      # If Hermes/STT run on the Mac host, use host.docker.internal in .env.
-      # If Hermes/STT run in another container, point these to the container DNS name
-      # and attach this service to the same Docker network.
-      # Example:
-      # HERMES_BASE_URL: http://hermes:8642/v1
-      # STT_BASE_URL: http://stt:5003/v1
     volumes:
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
@@ -31,19 +24,18 @@ services:
       - ./LICENSE:/app/LICENSE:ro
       - ./aiavatar:/app/aiavatar
       - ./server:/app/server
+      - ./voice_auth_server:/app/voice_auth_server
       - ./models:/app/models
-      - uv-venv:/app/.venv
+      - voice-auth-uv-venv:/app/.venv
       - uv-cache:/root/.cache/uv
       - torch-cache:/root/.cache/torch
-      - aivis-cache:/app/.cache/aivis_tts
       - app-data:/app/data
-      - recorded-voices:/app/recorded_voices
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
       - sh
       - -c
-      - 'if [ "$$VOICE_AUTH_PROVIDER" = "wespeaker_mlx" ]; then EXTRA="--extra voice-auth"; else EXTRA=""; fi; uv sync --frozen $$EXTRA && uv run uvicorn server.server:app --host 0.0.0.0 --port 8000 --reload'
+      - uv sync --frozen && uv run uvicorn voice_auth_server.server:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
       interval: 10s
@@ -51,10 +43,9 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+
 volumes:
-  uv-venv:
+  voice-auth-uv-venv:
   uv-cache:
   torch-cache:
-  aivis-cache:
   app-data:
-  recorded-voices:

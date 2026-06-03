@@ -167,6 +167,97 @@ HERMES_BASE_URL=http://host.docker.internal:8647/v1
 
 StackChan 側の `config.json` の `user_id` を固定してください。
 
+## Voice Authentication
+
+`VOICE_AUTH_ENABLED=true` にすると、VAD で確定した音声を STT / LLM に渡す前に登録済みユーザーの声と照合します。拒否された音声は `canceled` response になり、STT には送られません。
+
+最初の provider は `wespeaker_mlx` です。Apple Silicon では `Landon41/wespeaker-voxceleb-resnet34-LM-mlx` を使います。`voice-auth-runtime` は `VOICE_AUTH_MODEL_PATH` に必要ファイルが無い場合、起動時に `VOICE_AUTH_MODEL_REPO` から自動ダウンロードします。
+
+手動で先に落とす場合は以下も使えます。
+
+```sh
+uv sync --extra voice-auth
+uv run huggingface-cli download --local-dir models/wespeaker-voxceleb-resnet34-LM-mlx Landon41/wespeaker-voxceleb-resnet34-LM-mlx
+```
+
+Docker で会話サーバーや登録サーバーを動かす場合、MLX/Metal は Docker コンテナ内では使わず、Mac ホスト上で判定専用runtimeを常駐させます。
+
+```sh
+VOICE_AUTH_ENABLED=true uv run --extra voice-auth voice-auth-runtime
+```
+
+runtime はデフォルトで `0.0.0.0:8765` に起動します。Docker 側からは `http://host.docker.internal:8765` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。
+
+ホスト側runtimeをバックグラウンドで管理する場合は以下を使います。ログはデフォルトで `.voice_auth_runtime/logs/voice-auth-runtime.log` に追記されます。
+
+```sh
+voice_auth_runtime/start.sh
+voice_auth_runtime/status.sh
+voice_auth_runtime/status.sh --tail
+voice_auth_runtime/stop.sh
+```
+
+runtime のヘルスチェックは `GET /health` です。`AIAVATAR_API_KEY` または `VOICE_AUTH_API_KEY` を設定している場合、`Authorization: Bearer ...` が必要です。
+
+```sh
+curl -H "Authorization: Bearer $AIAVATAR_API_KEY" http://127.0.0.1:8765/health
+```
+
+```env
+VOICE_AUTH_ENABLED=true
+VOICE_AUTH_PROVIDER=http
+VOICE_AUTH_BASE_URL=http://host.docker.internal:8765
+# Optional. Defaults to AIAVATAR_API_KEY if empty.
+# VOICE_AUTH_API_KEY=
+VOICE_AUTH_MODEL_PATH=models/wespeaker-voxceleb-resnet34-LM-mlx
+VOICE_AUTH_MODEL_REPO=Landon41/wespeaker-voxceleb-resnet34-LM-mlx
+VOICE_AUTH_AUTO_DOWNLOAD_MODEL=true
+VOICE_AUTH_PROFILE_DIR=data/voice_profiles
+VOICE_AUTH_ENROLLMENT_DIR=data/voice_auth_enrollment
+VOICE_AUTH_THRESHOLD=0.70
+VOICE_AUTH_MIN_DURATION=1.2
+VOICE_AUTH_SAMPLE_RATE=16000
+VOICE_AUTH_REQUIRE_USER_ID=false
+VOICE_AUTH_ALLOW_IDENTIFICATION=true
+VOICE_AUTH_ALLOWED_USERS=user01
+VOICE_AUTH_FAIL_OPEN=false
+VOICE_AUTH_APPLY_CMN=true
+VOICE_AUTH_RUNTIME_PORT=8765
+# Optional runtime state/log paths used by start.sh/status.sh/stop.sh.
+# VOICE_AUTH_RUNTIME_STATE_DIR=.voice_auth_runtime
+# VOICE_AUTH_RUNTIME_LOG_DIR=.voice_auth_runtime/logs
+# VOICE_AUTH_RUNTIME_LOG_FILE=.voice_auth_runtime/logs/voice-auth-runtime.log
+```
+
+登録profileは `VOICE_AUTH_PROFILE_DIR` の `{user_id}.npz` として読み込みます。中には `embedding` という 256 次元の L2 normalize 済み vector を保存してください。会話時の自動登録は行いません。
+
+会話サーバーは `VOICE_AUTH_ALLOW_IDENTIFICATION=true` の場合、発話音声を登録済みprofile全体から識別し、`VOICE_AUTH_ALLOWED_USERS` に含まれる名前だけを許可します。
+
+音声登録時は本番会話サーバーを停止して、同じ `.env` と同じ `HOST_PORT` で登録サーバーを起動します。StackChan 側の接続先は変えません。
+
+```sh
+VOICE_AUTH_ENABLED=true uv run --extra voice-auth voice-auth-runtime
+docker compose down
+docker compose -f compose.voice-auth.yml up --build
+```
+
+登録UIは既存サーバーと同じポートの `/` で開きます。`AIAVATAR_API_KEY` が設定されている場合は、`AIAVATAR_ADMIN_USER` / `AIAVATAR_API_KEY` の Basic 認証を使います。
+
+WAV ファイルから直接登録する場合は以下も使えます。
+
+```sh
+uv run voice-auth-enroll user01 samples/user01_*.wav
+```
+
+採用前の合格条件:
+
+```text
+MLX embedding が参照実装と一致する: 同一音声 cosine >= 0.999
+手元マイクで本人/別人スコアが分離する: 本人下限 > 別人上限 + 余裕
+profileなし、短すぎる音声、推論エラーは拒否される
+拒否時に STT / LLM へ進まない
+```
+
 ## Discord Sync
 
 Discord チャンネルに StackChan との音声会話ログを流し、同じ Hermes conversation に Discord からもテキストで問い合わせる場合は Discord sync を有効化します。

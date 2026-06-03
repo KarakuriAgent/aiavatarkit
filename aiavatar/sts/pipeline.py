@@ -24,6 +24,7 @@ from .performance_recorder.sqlite import SQLitePerformanceRecorder
 from .voice_recorder import VoiceRecorder, RequestVoice, ResponseVoices
 from .voice_recorder.file import FileVoiceRecorder
 from .session_state_manager import SessionStateManager, SQLiteSessionStateManager
+from .voice_auth import VoiceAuthenticator
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class STSPipeline:
         voice_recorder: VoiceRecorder = None,
         voice_recorder_enabled: bool = True,
         voice_recorder_dir: str = "recorded_voices",
+        voice_auth: VoiceAuthenticator = None,
         invoke_queue_idle_timeout: float = 10.0,
         invoke_timeout: float = 60.0,
         use_invoke_queue: bool = False,
@@ -200,6 +202,9 @@ class STSPipeline:
         self.voice_recorder_enabled = voice_recorder_enabled
         self.voice_recorder_response_audio_format = "wav"
 
+        # Voice authentication
+        self.voice_auth = voice_auth
+
         # User custom logic
         self._on_before_llm_handlers = []
         self._on_before_tts_handlers = []
@@ -317,6 +322,53 @@ class STSPipeline:
                 raise ValueError("session_id is required but not provided")
 
             start_time = time()
+
+            if self.voice_auth and request.audio_data:
+                try:
+                    voice_auth_result = await self.voice_auth.verify(
+                        user_id=request.user_id,
+                        audio_bytes=request.audio_data,
+                        sample_rate=getattr(self.stt, "sample_rate", None) or getattr(self.vad, "sample_rate", 16000),
+                        audio_duration=request.audio_duration,
+                    )
+                except Exception as ex:
+                    logger.warning("Voice authentication failed: %s", ex, exc_info=self.debug)
+                    voice_auth_result = None
+
+                if voice_auth_result is None or not voice_auth_result.accepted:
+                    metadata = {
+                        "reason": "voice_auth_rejected",
+                        "voice_auth": voice_auth_result.to_dict() if voice_auth_result else {
+                            "accepted": False,
+                            "user_id": request.user_id,
+                            "request_user_id": request.user_id,
+                            "matched_user_id": None,
+                            "matched_voice_user_id": None,
+                            "reason": "voice_auth_error",
+                        },
+                    }
+                    if self.debug:
+                        voice_auth = metadata["voice_auth"]
+                        logger.info(
+                            "Voice authentication rejected request: reason=%s request_user_id=%s matched_voice_user_id=%s similarity=%s threshold=%s",
+                            voice_auth.get("reason"),
+                            voice_auth.get("request_user_id"),
+                            voice_auth.get("matched_voice_user_id"),
+                            voice_auth.get("similarity"),
+                            voice_auth.get("threshold"),
+                        )
+                    yield STSResponse(
+                        type="canceled",
+                        session_id=request.session_id,
+                        user_id=request.user_id,
+                        context_id=request.context_id,
+                        metadata=metadata,
+                    )
+                    return
+
+                request.metadata = request.metadata or {}
+                request.metadata["voice_auth"] = voice_auth_result.to_dict()
+
             transaction_id = str(uuid4())
             suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
 
@@ -326,7 +378,10 @@ class STSPipeline:
                     type="accepted",
                     session_id=request.session_id,
                     transaction_id=transaction_id,
-                    metadata={"block_barge_in": request.block_barge_in}
+                    metadata={
+                        "block_barge_in": request.block_barge_in,
+                        **({"voice_auth": request.metadata["voice_auth"]} if request.metadata and "voice_auth" in request.metadata else {}),
+                    }
                 )))
             if not suppress_adapter_response:
                 for handler in self._on_accepted_handlers:
@@ -779,3 +834,5 @@ class STSPipeline:
     async def shutdown(self):
         self.performance_recorder.close()
         await self.voice_recorder.stop()
+        if self.voice_auth:
+            await self.voice_auth.close()

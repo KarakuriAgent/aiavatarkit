@@ -157,6 +157,10 @@ cython_debug/
 aiavatar.db
 aivis_tts_cache/
 recorded_voices/
+.voice_auth_runtime/
+models/
+data/voice_profiles/
+data/voice_auth_enrollment/
 html/
 examples/websocket/.env.stackchan
 examples/websocket/aivis_tts_cache/

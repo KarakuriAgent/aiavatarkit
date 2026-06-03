@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Enrollment</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --line: #d9dee7;
+      --text: #171a1f;
+      --muted: #626a77;
+      --accent: #126e82;
+      --accent-strong: #0b5667;
+      --danger: #b33131;
+      --ok: #2f7d46;
+      --shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--muted);
+    }
+    .dot.active { background: var(--ok); }
+    .toolbar, .enroll {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 12px;
+      margin-bottom: 14px;
+    }
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 9px 12px;
+      font: inherit;
+      cursor: pointer;
+      min-height: 38px;
+    }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button.primary:hover { background: var(--accent-strong); }
+    button.danger {
+      color: var(--danger);
+      border-color: #e1b4b4;
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    input[type="text"] {
+      min-height: 38px;
+      min-width: 220px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    .message {
+      min-height: 20px;
+      color: var(--muted);
+      margin: 4px 0 12px;
+    }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--ok); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: #f0f3f7;
+    }
+    tr:last-child td { border-bottom: 0; }
+    audio { width: 260px; max-width: 100%; height: 36px; }
+    .empty {
+      padding: 34px;
+      text-align: center;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    @media (max-width: 760px) {
+      main { padding: 16px; }
+      header { align-items: flex-start; flex-direction: column; }
+      table, thead, tbody, th, td, tr { display: block; }
+      thead { display: none; }
+      tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+      td { border-bottom: 0; padding: 6px 12px; }
+      td::before {
+        content: attr(data-label);
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 3px;
+      }
+      audio { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Voice Enrollment</h1>
+      <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">停止中</span></div>
+    </header>
+
+    <section class="toolbar">
+      <button id="startButton" class="primary" type="button">読み取り開始</button>
+      <button id="stopButton" type="button">読み取り停止</button>
+      <button id="refreshButton" type="button">更新</button>
+      <button id="clearButton" class="danger" type="button">候補を消去</button>
+    </section>
+
+    <section class="enroll">
+      <input id="userIdInput" type="text" placeholder="登録名 user_id" autocomplete="off">
+      <button id="enrollButton" class="primary" type="button">選択した音声で登録</button>
+    </section>
+
+    <div id="message" class="message"></div>
+
+    <section id="candidateSection">
+      <div class="empty">候補音声はまだありません。</div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      candidates: [],
+      selected: new Set(),
+      timer: null,
+    };
+
+    const els = {
+      statusDot: document.getElementById("statusDot"),
+      statusText: document.getElementById("statusText"),
+      startButton: document.getElementById("startButton"),
+      stopButton: document.getElementById("stopButton"),
+      refreshButton: document.getElementById("refreshButton"),
+      clearButton: document.getElementById("clearButton"),
+      enrollButton: document.getElementById("enrollButton"),
+      userIdInput: document.getElementById("userIdInput"),
+      message: document.getElementById("message"),
+      candidateSection: document.getElementById("candidateSection"),
+    };
+
+    function setMessage(text, type = "") {
+      els.message.textContent = text;
+      els.message.className = `message ${type}`;
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const data = await response.json();
+          detail = data.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    function updateStateView(data) {
+      const active = Boolean(data.reading_enabled);
+      els.statusDot.classList.toggle("active", active);
+      els.statusText.textContent = active ? "読み取り中" : "停止中";
+      els.startButton.disabled = active;
+      els.stopButton.disabled = !active;
+    }
+
+    function renderCandidates() {
+      if (state.candidates.length === 0) {
+        els.candidateSection.innerHTML = '<div class="empty">候補音声はまだありません。</div>';
+        return;
+      }
+      const rows = state.candidates.map((candidate, index) => {
+        const checked = state.selected.has(candidate.id) ? "checked" : "";
+        const created = new Date(candidate.created_at).toLocaleString();
+        const duration = Number(candidate.duration || 0).toFixed(2);
+        return `
+          <tr>
+            <td data-label="選択"><input type="checkbox" data-id="${candidate.id}" ${checked}></td>
+            <td data-label="#">${index + 1}</td>
+            <td data-label="再生"><audio controls preload="none" src="${candidate.audio_url}"></audio></td>
+            <td data-label="長さ">${duration}s</td>
+            <td data-label="取得時刻">${created}</td>
+            <td data-label="Session" class="mono">${candidate.session_id || "-"}</td>
+            <td data-label="User" class="mono">${candidate.user_id || "-"}</td>
+          </tr>
+        `;
+      }).join("");
+      els.candidateSection.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>選択</th>
+              <th>#</th>
+              <th>再生</th>
+              <th>長さ</th>
+              <th>取得時刻</th>
+              <th>Session</th>
+              <th>User</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+      els.candidateSection.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+        box.addEventListener("change", () => {
+          if (box.checked) state.selected.add(box.dataset.id);
+          else state.selected.delete(box.dataset.id);
+        });
+      });
+    }
+
+    async function refresh() {
+      const [serverState, candidates] = await Promise.all([
+        requestJson("/api/state"),
+        requestJson("/api/candidates"),
+      ]);
+      updateStateView(serverState);
+      state.candidates = candidates.candidates;
+      const ids = new Set(state.candidates.map((candidate) => candidate.id));
+      state.selected = new Set([...state.selected].filter((id) => ids.has(id)));
+      renderCandidates();
+    }
+
+    async function startReading() {
+      updateStateView(await requestJson("/api/reading/start", { method: "POST" }));
+      setMessage("読み取りを開始しました。", "ok");
+    }
+
+    async function stopReading() {
+      updateStateView(await requestJson("/api/reading/stop", { method: "POST" }));
+      setMessage("読み取りを停止しました。", "ok");
+    }
+
+    async function clearCandidates() {
+      if (!confirm("候補音声をすべて消去しますか？")) return;
+      await requestJson("/api/candidates", { method: "DELETE" });
+      state.selected.clear();
+      await refresh();
+      setMessage("候補音声を消去しました。", "ok");
+    }
+
+    async function enroll() {
+      const userId = els.userIdInput.value.trim();
+      const candidateIds = [...state.selected];
+      if (!userId) {
+        setMessage("登録名を入力してください。", "error");
+        return;
+      }
+      if (candidateIds.length === 0) {
+        setMessage("登録に使う音声を選択してください。", "error");
+        return;
+      }
+      const result = await requestJson("/api/enroll", {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, candidate_ids: candidateIds }),
+      });
+      setMessage(`${result.user_id} を ${result.samples} 件の音声で登録しました。`, "ok");
+    }
+
+    function handle(action) {
+      action().catch((error) => setMessage(error.message, "error"));
+    }
+
+    els.startButton.addEventListener("click", () => handle(startReading));
+    els.stopButton.addEventListener("click", () => handle(stopReading));
+    els.refreshButton.addEventListener("click", () => handle(refresh));
+    els.clearButton.addEventListener("click", () => handle(clearCandidates));
+    els.enrollButton.addEventListener("click", () => handle(enroll));
+
+    handle(refresh);
+    state.timer = setInterval(() => handle(refresh), 2500);
+  </script>
+</body>
+</html>

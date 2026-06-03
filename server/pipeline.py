@@ -5,6 +5,7 @@ from .providers.llm import create_llm
 from .providers.stt import create_stt
 from .providers.tts import create_tts
 from .providers.vad import create_vad
+from .providers.voice_auth import create_voice_auth
 
 
 def create_aiavatar_app(settings: Settings):
@@ -12,12 +13,14 @@ def create_aiavatar_app(settings: Settings):
     vad = create_vad(settings, stt)
     llm = create_llm(settings)
     tts = create_tts(settings)
+    voice_auth = create_voice_auth(settings)
 
     return AIAvatarWebSocketServer(
         vad=vad,
         stt=stt,
         llm=llm,
         tts=tts,
+        voice_auth=voice_auth,
         merge_request_threshold=settings.merge_request_threshold,
         use_invoke_queue=settings.use_invoke_queue,
         api_key=settings.aiavatar_api_key,
