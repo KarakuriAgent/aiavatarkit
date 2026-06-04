@@ -3,6 +3,7 @@ import logging
 import os
 import wave
 from io import BytesIO
+from time import perf_counter
 from typing import Optional
 
 import numpy as np
@@ -72,6 +73,10 @@ def read_wav_upload(data: bytes) -> tuple[np.ndarray, int]:
     if channels > 1:
         samples = samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
     return samples.astype(np.float32) / 32768.0, sample_rate
+
+
+def log_text(text: str) -> str:
+    return (text or "").replace("\n", "\\n")
 
 
 class Qwen3ASRRuntime:
@@ -177,20 +182,34 @@ async def audio_transcriptions(
     context: Optional[str] = Form(default=None),
     max_new_tokens: Optional[int] = Form(default=None),
 ):
+    upload_data = await file.read()
     try:
-        audio, sample_rate = read_wav_upload(await file.read())
+        audio, sample_rate = read_wav_upload(upload_data)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
     if model and model != runtime.model:
         logger.warning("Ignoring per-request model=%s; runtime model=%s", model, runtime.model)
 
+    started_at = perf_counter()
     text = await runtime.transcribe(
         audio=audio,
         sample_rate=sample_rate,
         language=language,
         context=context,
         max_new_tokens=max_new_tokens,
+    )
+    transcribe_ms = (perf_counter() - started_at) * 1000
+    audio_duration = len(audio) / sample_rate if sample_rate else 0
+    logger.info(
+        "Qwen3-ASR transcription: model=%s language=%s sample_rate=%d audio_duration=%.3f upload_bytes=%d transcribe_ms=%.2f text=%s",
+        runtime.model,
+        language or runtime.language,
+        sample_rate,
+        audio_duration,
+        len(upload_data),
+        transcribe_ms,
+        log_text(text),
     )
     return {"text": text}
 
