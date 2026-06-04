@@ -17,7 +17,11 @@ class ContextManager(ABC):
         pass
 
     @abstractmethod
-    async def add_histories(self, context_id: str, data_list: List[Dict], context_schema: str = None):
+    async def get_recent_histories(self, user_id: str = None, limit: int = 100, include_timestamp: bool = False, fallback_to_global: bool = True) -> List[Dict]:
+        pass
+
+    @abstractmethod
+    async def add_histories(self, context_id: str, data_list: List[Dict], context_schema: str = None, user_id: str = None):
         pass
 
     @abstractmethod
@@ -57,17 +61,28 @@ class SQLiteContextManager(ContextManager):
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         created_at TIMESTAMP NOT NULL,
                         context_id TEXT NOT NULL,
+                        user_id TEXT,
                         serialized_data JSON NOT NULL,
                         context_schema TEXT
                     )
                     """
                 )
+                cursor = conn.execute("PRAGMA table_info(chat_histories)")
+                columns = {row[1] for row in cursor.fetchall()}
+                if "user_id" not in columns:
+                    conn.execute("ALTER TABLE chat_histories ADD COLUMN user_id TEXT")
 
                 # Create an index to speed up filtering queries by context_id and created_at
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_chat_histories_context_id_created_at
                     ON chat_histories (context_id, created_at)
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chat_histories_user_id_created_at
+                    ON chat_histories (user_id, created_at)
                     """
                 )
 
@@ -133,7 +148,64 @@ class SQLiteContextManager(ContextManager):
         finally:
             conn.close()
 
-    async def add_histories(self, context_id: str, data_list: List[Dict], context_schema: str = None):
+    async def get_recent_histories(self, user_id: str = None, limit: int = 100, include_timestamp: bool = False, fallback_to_global: bool = True) -> List[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            where_clauses = []
+            params = []
+
+            if user_id:
+                where_clauses.append("user_id = ?")
+                params.append(user_id)
+
+            if self.context_timeout > 0:
+                where_clauses.append("created_at >= ?")
+                cutoff_time = datetime.now(timezone.utc) - timedelta(seconds=self.context_timeout)
+                params.append(cutoff_time)
+
+            params.append(limit)
+
+            columns = "serialized_data, created_at" if include_timestamp else "serialized_data"
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            sql = f"""
+            SELECT {columns}
+            FROM chat_histories
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT ?
+            """
+
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+
+            if user_id and not rows and fallback_to_global:
+                return await self.get_recent_histories(
+                    user_id=None,
+                    limit=limit,
+                    include_timestamp=include_timestamp,
+                    fallback_to_global=False,
+                )
+
+            rows.reverse()
+            if include_timestamp:
+                results = []
+                for row in rows:
+                    data = json.loads(row[0])
+                    data["created_at"] = row[1]
+                    results.append(data)
+            else:
+                results = [json.loads(row[0]) for row in rows]
+            return results
+
+        except Exception as ex:
+            logger.exception(f"Error at get_recent_histories: {ex}")
+            return []
+
+        finally:
+            conn.close()
+
+    async def add_histories(self, context_id: str, data_list: List[Dict], context_schema: str = None, user_id: str = None):
         if not data_list:
             # If the list is empty, do nothing
             return
@@ -141,7 +213,7 @@ class SQLiteContextManager(ContextManager):
         conn = sqlite3.connect(self.db_path)
         try:
             # Prepare INSERT statement
-            columns = ["created_at", "context_id", "serialized_data", "context_schema"]
+            columns = ["created_at", "context_id", "user_id", "serialized_data", "context_schema"]
             placeholders = ["?"] * len(columns)
             sql = f"""
                 INSERT INTO chat_histories ({', '.join(columns)}) 
@@ -154,6 +226,7 @@ class SQLiteContextManager(ContextManager):
                 record = (
                     now_utc,                        # created_at
                     context_id,                     # context_id
+                    user_id,                        # user_id
                     json.dumps(data_item, ensure_ascii=True),  # serialized_data
                     context_schema,                 # context_schema
                 )

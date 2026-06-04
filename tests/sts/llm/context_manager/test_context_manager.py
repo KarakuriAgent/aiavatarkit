@@ -140,6 +140,45 @@ async def test_get_histories_with_timestamp(context_manager):
 
 
 @pytest.mark.asyncio
+async def test_get_recent_histories_by_user_id(context_manager):
+    await context_manager.add_histories(
+        "ctx_user_1",
+        [
+            {"message": "User 1 request", "role": "user"},
+            {"message": "User 1 response", "role": "assistant"},
+        ],
+        user_id="user1",
+    )
+    await context_manager.add_histories(
+        "ctx_user_2",
+        [
+            {"message": "User 2 request", "role": "user"},
+            {"message": "User 2 response", "role": "assistant"},
+        ],
+        user_id="user2",
+    )
+
+    histories = await context_manager.get_recent_histories(user_id="user1", limit=10)
+
+    assert [item["message"] for item in histories] == [
+        "User 1 request",
+        "User 1 response",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_recent_histories_falls_back_to_global_when_user_has_no_rows(context_manager):
+    await context_manager.add_histories(
+        "ctx_legacy",
+        [{"message": "Legacy request", "role": "user"}],
+    )
+
+    histories = await context_manager.get_recent_histories(user_id="missing-user", limit=10)
+
+    assert [item["message"] for item in histories] == ["Legacy request"]
+
+
+@pytest.mark.asyncio
 async def test_merge_context(context_manager):
     await context_manager.add_histories("ctx_from", [{"message": "Hello from phone"}])
     await context_manager.add_histories("ctx_to", [{"message": "Hello from web"}])

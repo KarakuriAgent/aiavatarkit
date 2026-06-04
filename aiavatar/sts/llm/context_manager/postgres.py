@@ -89,9 +89,16 @@ class PostgreSQLContextManager(ContextManager):
                         id SERIAL PRIMARY KEY,
                         created_at TIMESTAMP NOT NULL,
                         context_id TEXT NOT NULL,
+                        user_id TEXT,
                         serialized_data JSON NOT NULL,
                         context_schema TEXT
                     )
+                    """
+                )
+                await conn.execute(
+                    """
+                    ALTER TABLE chat_histories
+                    ADD COLUMN IF NOT EXISTS user_id TEXT
                     """
                 )
                 # Create index
@@ -99,6 +106,12 @@ class PostgreSQLContextManager(ContextManager):
                     """
                     CREATE INDEX IF NOT EXISTS idx_chat_histories_context_id_created_at
                     ON chat_histories (context_id, created_at)
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chat_histories_user_id_created_at
+                    ON chat_histories (user_id, created_at)
                     """
                 )
                 self._db_initialized = True
@@ -162,7 +175,64 @@ class PostgreSQLContextManager(ContextManager):
                 logger.exception(f"Error at get_histories: {ex}")
                 return []
 
-    async def add_histories(self, context_id: str, data_list: List[Dict], context_schema: str = None):
+    async def get_recent_histories(self, user_id: str = None, limit: int = 100, include_timestamp: bool = False, fallback_to_global: bool = True) -> List[Dict]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            try:
+                where_clauses = []
+                params = []
+                param_index = 1
+
+                if user_id:
+                    where_clauses.append(f"user_id = ${param_index}")
+                    params.append(user_id)
+                    param_index += 1
+
+                if self.context_timeout > 0:
+                    where_clauses.append(f"created_at >= ${param_index}")
+                    cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=self.context_timeout)
+                    params.append(cutoff_time)
+                    param_index += 1
+
+                params.append(limit)
+
+                columns = "serialized_data, created_at" if include_timestamp else "serialized_data"
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                sql = f"""
+                SELECT {columns}
+                FROM chat_histories
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ${param_index}
+                """
+
+                rows = await conn.fetch(sql, *params)
+
+                if user_id and not rows and fallback_to_global:
+                    return await self.get_recent_histories(
+                        user_id=None,
+                        limit=limit,
+                        include_timestamp=include_timestamp,
+                        fallback_to_global=False,
+                    )
+
+                rows = list(reversed(rows))
+                results = []
+                for row in rows:
+                    data = row["serialized_data"]
+                    if isinstance(data, str):
+                        data = json.loads(data)
+                    if include_timestamp:
+                        created_at = row["created_at"]
+                        data["created_at"] = created_at.isoformat() if created_at else None
+                    results.append(data)
+                return results
+
+            except Exception as ex:
+                logger.exception(f"Error at get_recent_histories: {ex}")
+                return []
+
+    async def add_histories(self, context_id: str, data_list: List[Dict], context_schema: str = None, user_id: str = None):
         if not data_list:
             return
 
@@ -170,8 +240,8 @@ class PostgreSQLContextManager(ContextManager):
         async with pool.acquire() as conn:
             try:
                 sql_query = """
-                    INSERT INTO chat_histories (created_at, context_id, serialized_data, context_schema)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO chat_histories (created_at, context_id, user_id, serialized_data, context_schema)
+                    VALUES ($1, $2, $3, $4, $5)
                 """
 
                 now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -180,6 +250,7 @@ class PostgreSQLContextManager(ContextManager):
                     record = (
                         now_utc,  # created_at
                         context_id,  # context_id
+                        user_id,  # user_id
                         json.dumps(data_item, ensure_ascii=False),  # serialized_data
                         context_schema,  # context_schema
                     )

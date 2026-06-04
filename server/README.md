@@ -175,7 +175,7 @@ docker compose up --build
 
 ホスト側の公開ポートを変える場合は `.env` に `HOST_PORT=8001` のように指定します。コンテナ内のアプリは常に `PORT=8000` で起動します。Docker の port mapping は `127.0.0.1:${HOST_PORT}:8000` なので、ホスト外には公開されません。
 
-Docker Compose では会話ログ DB を `/app/data/aiavatar.db`、録音ファイルを `/app/recorded_voices` に保存し、それぞれ named volume で永続化します。`docker compose down` / `up` でコンテナを作り直してもログは残ります。
+Docker Compose では会話ログ DB を `/app/data/aiavatar.db` に保存し、録音ファイルはホスト側の `./recorded_voices` を `/app/recorded_voices` に bind mount して保存します。`docker compose down` / `up` でコンテナを作り直してもログは残ります。
 
 Hermes や STT が Mac ホスト上で動いている場合は、`.env` で以下のように指定します。
 
@@ -200,9 +200,34 @@ HERMES_BASE_URL=http://host.docker.internal:8647/v1
 
 StackChan 側の `config.json` の `user_id` を固定してください。
 
+## Audio Enhancement
+
+`AUDIO_ENHANCEMENT_ENABLED=true` にすると、VAD で確定したフル発話音声に背景ノイズ抑制をかけてから voice auth / STT に渡します。provider は DeepFilterNet の `deepFilter` Python CLI または公式 precompiled `deep-filter` binary を外部コマンドとして呼び出します。
+
+```text
+VAD -> audio_enhancement -> voice_auth -> STT -> addressing -> accepted -> LLM/TTS
+```
+
+DeepFilterNet は 48kHz 前提なので、入力 PCM を一時 WAV にして 48kHz mono へ変換し、enhance 後に元の sample rate へ戻します。`AUDIO_ENHANCEMENT_FAIL_OPEN=true` の場合、コマンドが未導入または失敗したときは raw 音声のまま続行します。
+
+Docker image には `/usr/local/bin/deep-filter` を build 時に入れるため、通常は command path の設定は不要です。
+
+録音が有効な場合、通常の `{transaction_id}_request.wav` に加えて、`{transaction_id}_request_raw.wav` と `{transaction_id}_request_enhanced.wav` も保存できます。通常の request wav は実際に voice auth / STT へ渡した音声です。
+
+```env
+AUDIO_ENHANCEMENT_ENABLED=true
+AUDIO_ENHANCEMENT_PROVIDER=deepfilternet
+# Optional model name or model directory, e.g. DeepFilterNet2.
+# AUDIO_ENHANCEMENT_MODEL=
+AUDIO_ENHANCEMENT_TIMEOUT=30
+AUDIO_ENHANCEMENT_FAIL_OPEN=true
+AUDIO_ENHANCEMENT_RECORD_RAW=true
+AUDIO_ENHANCEMENT_RECORD_ENHANCED=true
+```
+
 ## Voice Authentication
 
-`VOICE_AUTH_ENABLED=true` にすると、VAD で確定した音声を STT / LLM に渡す前に登録済みユーザーの声と照合します。拒否された音声は `canceled` response になり、STT には送られません。
+`VOICE_AUTH_ENABLED=true` にすると、VAD で確定した音声を STT / LLM に渡す前に登録済みユーザーの声と照合します。audio enhancement が有効な場合は、ノイズ抑制後の音声を照合します。拒否された音声は `canceled` response になり、STT には送られません。
 
 最初の provider は `wespeaker_mlx` です。Apple Silicon では `Landon41/wespeaker-voxceleb-resnet34-LM-mlx` を使います。`provider/start.sh` は `VOICE_AUTH_MODEL_PATH` に必要ファイルが無い場合、起動時に `VOICE_AUTH_MODEL_REPO` から自動ダウンロードします。
 
@@ -287,6 +312,34 @@ MLX embedding が参照実装と一致する: 同一音声 cosine >= 0.999
 profileなし、短すぎる音声、推論エラーは拒否される
 拒否時に STT / LLM へ進まない
 ```
+
+## Addressing Gate
+
+`ADDRESSING_ENABLED=true` にすると、voice auth と STT の後、`accepted` を送る前に「この発話がアバター宛てか」を軽量 LLM で判定します。宛先ではない発話は `canceled` response になり、会話 LLM / TTS には進みません。
+
+```text
+VAD -> audio_enhancement -> voice_auth -> STT -> addressing -> accepted -> LLM/TTS
+```
+
+判定 provider は OpenAI-compatible `/chat/completions` の `response_format=json_schema` を使います。user message には認識テキストだけを送り、system prompt にアバター名、直近履歴、現在時刻、最後のアバター発話からの経過秒数を入れます。判定結果には `accepted`、`reason`、`confidence`、`explanation` が入り、`DEBUG=true` の場合は全 addressing decision をログに出します。
+
+```env
+ADDRESSING_ENABLED=true
+ADDRESSING_PROVIDER=openai_compatible
+ADDRESSING_TARGET_NAMES=ロボ花音,ろぼかのん,ロボカノン,かのん,花音,カノン
+# ADDRESSING_* provider override が未設定の場合は HERMES_BASE_URL / HERMES_API_KEY / HERMES_MODEL を使います。
+# 別 provider を使う場合は、その provider 用の ADDRESSING_API_KEY を設定してください。
+# ADDRESSING_BASE_URL=https://api.cerebras.ai/v1
+# ADDRESSING_API_KEY=
+# ADDRESSING_MODEL=gpt-oss-120b
+# ADDRESSING_PRIMARY_NAME=ロボ花音
+ADDRESSING_HISTORY_LIMIT=12
+ADDRESSING_TIMEOUT=10
+ADDRESSING_FAIL_OPEN=false
+ADDRESSING_MIN_CONFIDENCE=0
+```
+
+addressing は音声データ付きのリクエストだけに適用されます。Discord gateway、`/conversation` の text delivery、`/avatar/speak` は明示入力なので bypass されます。`/avatar/perform` は会話 LLM を通らないため、`chat_histories` にも入りません。
 
 ## Discord Sync
 

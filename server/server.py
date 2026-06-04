@@ -1,4 +1,6 @@
 import uvicorn
+import shlex
+import shutil
 from fastapi import FastAPI
 
 from aiavatar.admin import setup_admin_panel
@@ -17,9 +19,17 @@ app = FastAPI()
 
 @app.get("/health")
 async def health():
+    audio_enhancement_command_available = False
+    if settings.audio_enhancement_enabled and settings.audio_enhancement_command:
+        command = shlex.split(settings.audio_enhancement_command)
+        audio_enhancement_command_available = bool(command and shutil.which(command[0]))
+
     return {
         "ok": True,
         "mode": "conversation",
+        "audio_enhancement_enabled": settings.audio_enhancement_enabled,
+        "audio_enhancement_provider": settings.audio_enhancement_provider if settings.audio_enhancement_enabled else None,
+        "audio_enhancement_command_available": audio_enhancement_command_available,
         "voice_auth_enabled": settings.voice_auth_enabled,
         "voice_auth_provider": settings.voice_auth_provider if settings.voice_auth_enabled else None,
     }

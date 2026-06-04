@@ -112,7 +112,7 @@ class ClaudeService(LLMService):
             if "text" in messages[0]["content"][-1]:
                 messages[0]["content"][-1]["text"] = self._update_context_filter(messages[0]["content"][-1]["text"])
         messages.append({"role": "assistant", "content": [{"type": "text", "text": response_text}]})
-        await self.context_manager.add_histories(context_id, messages, "claude")
+        await self.context_manager.add_histories(context_id, messages, "claude", user_id=user_id)
 
     def tool(self, spec: Dict):
         def decorator(func):

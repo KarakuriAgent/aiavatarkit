@@ -23,8 +23,10 @@ from .performance_recorder import PerformanceRecord, PerformanceRecorder
 from .performance_recorder.sqlite import SQLitePerformanceRecorder
 from .voice_recorder import VoiceRecorder, RequestVoice, ResponseVoices
 from .voice_recorder.file import FileVoiceRecorder
+from .audio_enhancement import AudioEnhancer
 from .session_state_manager import SessionStateManager, SQLiteSessionStateManager
 from .voice_auth import VoiceAuthenticator
+from .addressing import AddressingDetector
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +69,13 @@ class STSPipeline:
         voice_recorder: VoiceRecorder = None,
         voice_recorder_enabled: bool = True,
         voice_recorder_dir: str = "recorded_voices",
+        audio_enhancer: AudioEnhancer = None,
+        audio_enhancement_fail_open: bool = True,
+        audio_enhancement_record_raw: bool = True,
+        audio_enhancement_record_enhanced: bool = True,
         voice_auth: VoiceAuthenticator = None,
+        addressing_detector: AddressingDetector = None,
+        addressing_history_limit: int = 12,
         invoke_queue_idle_timeout: float = 10.0,
         invoke_timeout: float = 60.0,
         use_invoke_queue: bool = False,
@@ -202,8 +210,18 @@ class STSPipeline:
         self.voice_recorder_enabled = voice_recorder_enabled
         self.voice_recorder_response_audio_format = "wav"
 
+        # Audio enhancement
+        self.audio_enhancer = audio_enhancer
+        self.audio_enhancement_fail_open = audio_enhancement_fail_open
+        self.audio_enhancement_record_raw = audio_enhancement_record_raw
+        self.audio_enhancement_record_enhanced = audio_enhancement_record_enhanced
+
         # Voice authentication
         self.voice_auth = voice_auth
+
+        # Addressing detection
+        self.addressing_detector = addressing_detector
+        self.addressing_history_limit = addressing_history_limit
 
         # User custom logic
         self._on_before_llm_handlers = []
@@ -228,6 +246,10 @@ class STSPipeline:
             "timestamp_prefix": self.timestamp_prefix,
             "timestamp_timezone": self.timestamp_timezone,
             "voice_recorder_enabled": self.voice_recorder_enabled,
+            "audio_enhancement_fail_open": self.audio_enhancement_fail_open,
+            "audio_enhancement_record_raw": self.audio_enhancement_record_raw,
+            "audio_enhancement_record_enhanced": self.audio_enhancement_record_enhanced,
+            "addressing_history_limit": self.addressing_history_limit,
             "invoke_queue_idle_timeout": self.invoke_queue_idle_timeout,
             "invoke_timeout": self.invoke_timeout,
             "use_invoke_queue": self.use_invoke_queue,
@@ -303,6 +325,57 @@ class STSPipeline:
 
         return False
 
+    def _is_addressing_detection_required(self, request: STSRequest) -> bool:
+        if not self.addressing_detector:
+            return False
+        if not request.audio_data:
+            return False
+        if request.metadata and request.metadata.get("skip_addressing"):
+            return False
+        return True
+
+    async def _get_addressing_context(self, user_id: str) -> Tuple[List[dict], Optional[float]]:
+        recent_history = await self.llm.context_manager.get_recent_histories(
+            user_id=user_id,
+            limit=self.addressing_history_limit,
+            include_timestamp=True,
+            fallback_to_global=True,
+        )
+        return recent_history, self._seconds_since_last_assistant_turn(recent_history)
+
+    def _seconds_since_last_assistant_turn(self, recent_history: List[dict]) -> Optional[float]:
+        for item in reversed(recent_history or []):
+            if item.get("role") not in ("assistant", "model"):
+                continue
+            created_at = item.get("created_at")
+            if not created_at:
+                return None
+            try:
+                if isinstance(created_at, datetime):
+                    dt = created_at
+                else:
+                    dt = datetime.fromisoformat(str(created_at))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+            except Exception:
+                return None
+        return None
+
+    def _request_audio_sample_rate(self) -> int:
+        return getattr(self.stt, "sample_rate", None) or getattr(self.vad, "sample_rate", 16000)
+
+    def _audio_enhancer_provider_name(self) -> str:
+        if not self.audio_enhancer:
+            return ""
+        try:
+            config = self.audio_enhancer.get_config()
+            if config.get("provider"):
+                return config["provider"]
+        except Exception:
+            pass
+        return self.audio_enhancer.__class__.__name__
+
     async def is_transaction_active(self, session_id: str, transaction_id: str) -> Tuple[bool, Optional[str]]:
         state = await self.session_state_manager.get_session_state(session_id)
         return state.active_transaction_id == transaction_id, state.active_transaction_id
@@ -322,13 +395,64 @@ class STSPipeline:
                 raise ValueError("session_id is required but not provided")
 
             start_time = time()
+            transaction_id = str(uuid4())
+            suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
+            audio_sample_rate = self._request_audio_sample_rate()
+
+            if self.audio_enhancer and request.audio_data:
+                request.metadata = request.metadata or {}
+                if self.voice_recorder_enabled and self.audio_enhancement_record_raw:
+                    await self.voice_recorder.record(RequestVoice(
+                        transaction_id,
+                        request.audio_data,
+                        suffix="request_raw",
+                    ))
+                try:
+                    enhancement_result = await self.audio_enhancer.enhance(
+                        audio_bytes=request.audio_data,
+                        sample_rate=audio_sample_rate,
+                        session_id=request.session_id,
+                    )
+                    request.audio_data = enhancement_result.audio_bytes
+                    request.metadata["audio_enhancement"] = {
+                        "enabled": True,
+                        "applied": True,
+                        **enhancement_result.to_dict(),
+                    }
+                    if self.voice_recorder_enabled and self.audio_enhancement_record_enhanced:
+                        await self.voice_recorder.record(RequestVoice(
+                            transaction_id,
+                            request.audio_data,
+                            suffix="request_enhanced",
+                        ))
+                except Exception as ex:
+                    request.metadata["audio_enhancement"] = {
+                        "enabled": True,
+                        "applied": False,
+                        "provider": self._audio_enhancer_provider_name(),
+                        "error": str(ex),
+                        "fail_open": self.audio_enhancement_fail_open,
+                    }
+                    logger.warning("Audio enhancement failed: %s", ex, exc_info=self.debug)
+                    if not self.audio_enhancement_fail_open:
+                        yield STSResponse(
+                            type="canceled",
+                            session_id=request.session_id,
+                            user_id=request.user_id,
+                            context_id=request.context_id,
+                            metadata={
+                                "reason": "audio_enhancement_failed",
+                                "audio_enhancement": request.metadata["audio_enhancement"],
+                            },
+                        )
+                        return
 
             if self.voice_auth and request.audio_data:
                 try:
                     voice_auth_result = await self.voice_auth.verify(
                         user_id=request.user_id,
                         audio_bytes=request.audio_data,
-                        sample_rate=getattr(self.stt, "sample_rate", None) or getattr(self.vad, "sample_rate", 16000),
+                        sample_rate=audio_sample_rate,
                         audio_duration=request.audio_duration,
                     )
                 except Exception as ex:
@@ -369,24 +493,6 @@ class STSPipeline:
                 request.metadata = request.metadata or {}
                 request.metadata["voice_auth"] = voice_auth_result.to_dict()
 
-            transaction_id = str(uuid4())
-            suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
-
-            # Notify client that request is accepted (fire and forget to avoid blocking pipeline latency)
-            if not suppress_adapter_response:
-                asyncio.create_task(self.handle_response(STSResponse(
-                    type="accepted",
-                    session_id=request.session_id,
-                    transaction_id=transaction_id,
-                    metadata={
-                        "block_barge_in": request.block_barge_in,
-                        **({"voice_auth": request.metadata["voice_auth"]} if request.metadata and "voice_auth" in request.metadata else {}),
-                    }
-                )))
-            if not suppress_adapter_response:
-                for handler in self._on_accepted_handlers:
-                    await handler(request)
-
             performance = PerformanceRecord(
                 transaction_id=transaction_id,
                 user_id=request.user_id,
@@ -417,7 +523,6 @@ class STSPipeline:
                         session_id=request.session_id,
                         user_id=request.user_id,
                         context_id=request.context_id,
-                        transaction_id=transaction_id,
                         metadata={"reason": "No speech recognized."}
                     )
                     return
@@ -434,6 +539,39 @@ class STSPipeline:
             else:
                 request.text = recognized_text
 
+            if self._is_addressing_detection_required(request):
+                recent_history, seconds_since_last_assistant_turn = await self._get_addressing_context(request.user_id)
+                addressing_decision = await self.addressing_detector.detect(
+                    text=recognized_text,
+                    recent_history=recent_history,
+                    seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
+                )
+                if self.debug:
+                    logger.info(
+                        "Addressing decision: accepted=%s reason=%s confidence=%s explanation=%s text=%s",
+                        addressing_decision.accepted,
+                        addressing_decision.reason,
+                        addressing_decision.confidence,
+                        addressing_decision.explanation,
+                        recognized_text,
+                    )
+                request.metadata = request.metadata or {}
+                request.metadata["addressing"] = addressing_decision.to_dict()
+                if not addressing_decision.accepted:
+                    yield STSResponse(
+                        type="canceled",
+                        session_id=request.session_id,
+                        user_id=request.user_id,
+                        context_id=request.context_id,
+                        metadata={
+                            "reason": "addressing_rejected",
+                            "addressing": addressing_decision.to_dict(),
+                            "recognized_text": recognized_text,
+                            "input_type": input_type,
+                        },
+                    )
+                    return
+
             if self._validate_request:
                 if reason := await self._validate_request(request):
                     if self.debug:
@@ -443,7 +581,6 @@ class STSPipeline:
                         session_id=request.session_id,
                         user_id=request.user_id,
                         context_id=request.context_id,
-                        transaction_id=transaction_id,
                         metadata={"reason": reason}
                     )
                     return
@@ -501,6 +638,24 @@ class STSPipeline:
                 request.files = {}
 
             performance.context_id = request.context_id
+
+            # Notify client that request is accepted only after request gates pass.
+            if is_awake and not suppress_adapter_response:
+                asyncio.create_task(self.handle_response(STSResponse(
+                    type="accepted",
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    context_id=request.context_id,
+                    transaction_id=transaction_id,
+                    metadata={
+                        "block_barge_in": request.block_barge_in,
+                        **({"audio_enhancement": request.metadata["audio_enhancement"]} if request.metadata and "audio_enhancement" in request.metadata else {}),
+                        **({"voice_auth": request.metadata["voice_auth"]} if request.metadata and "voice_auth" in request.metadata else {}),
+                        **({"addressing": request.metadata["addressing"]} if request.metadata and "addressing" in request.metadata else {}),
+                    }
+                )))
+                for handler in self._on_accepted_handlers:
+                    await handler(request)
 
             # Stop on-going response before new response
             if is_awake and not suppress_adapter_response and (not self.use_invoke_queue or not request.wait_in_queue):
@@ -834,5 +989,9 @@ class STSPipeline:
     async def shutdown(self):
         self.performance_recorder.close()
         await self.voice_recorder.stop()
+        if self.audio_enhancer:
+            await self.audio_enhancer.close()
         if self.voice_auth:
             await self.voice_auth.close()
+        if self.addressing_detector:
+            await self.addressing_detector.close()

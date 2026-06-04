@@ -16,6 +16,7 @@ class Voice:
 @dataclass
 class RequestVoice(Voice):
     voice_bytes: bytes
+    suffix: str = "request"
 
 
 @dataclass
@@ -102,7 +103,7 @@ class VoiceRecorder(ABC):
                         )
                         voice.voice_bytes = header + voice.voice_bytes
                     await self.save_voice(
-                        id=f"{voice.transaction_id}_request",
+                        id=f"{voice.transaction_id}_{voice.suffix}",
                         voice_bytes=voice.voice_bytes,
                         audio_format="wav"
                     )

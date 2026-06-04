@@ -120,6 +120,45 @@ class SileroStreamSpeechDetector(SileroSpeechDetector):
     async def execute_on_speech_detected(self, recorded_data: bytes, text: str, metadata: dict, recorded_duration: float, session_id: str):
         await self._execute_on_speech_detected(recorded_data, text, metadata, recorded_duration, session_id)
 
+    async def _recognize_final_text(self, session: RecordingSession) -> Optional[str]:
+        try:
+            result = await self.speech_recognizer.recognize(session.session_id, bytes(session.buffer))
+            final_text = result.text if result else None
+            if self.debug and session.last_recognized_text and final_text != session.last_recognized_text:
+                logger.info(
+                    "Final recognition superseded partial result: partial=%s final=%s",
+                    session.last_recognized_text,
+                    final_text,
+                )
+            return final_text
+        except Exception as ex:
+            logger.error("Error in final recognition", exc_info=True)
+            await self._execute_on_speech_recognition_error(ex, session.session_id)
+            return None
+
+    async def _emit_final_speech_detected(self, session: RecordingSession, recorded_duration: float) -> bool:
+        final_text = await self._recognize_final_text(session)
+        if not final_text:
+            if self.debug:
+                logger.info("No final text recognized, skipping")
+            return False
+
+        if self._validate_recognized_text:
+            if validation := self._validate_recognized_text(final_text):
+                if self.debug:
+                    logger.info(f"Invalid recognized text: {final_text} / validation: {validation}")
+                return False
+
+        recorded_data = bytes(session.buffer)
+        asyncio.create_task(self.execute_on_speech_detected(
+            recorded_data,
+            final_text,
+            None,
+            recorded_duration,
+            session.session_id,
+        ))
+        return True
+
     async def process_samples(self, samples: bytes, session_id: str) -> bool:
         if self.to_linear16:
             samples = self.to_linear16(samples)
@@ -237,30 +276,7 @@ class SileroStreamSpeechDetector(SileroSpeechDetector):
                         except Exception as ex:
                             logger.error("Error waiting for pending recognition", exc_info=True)
 
-                    # Use last recognized text if available, otherwise run final recognition
-                    final_text = session.last_recognized_text
-                    if final_text is None:
-                        # No segment was recognized, run recognition on full buffer
-                        try:
-                            result = await self.speech_recognizer.recognize(session.session_id, bytes(session.buffer))
-                            final_text = result.text
-                        except Exception as ex:
-                            logger.error("Error in final recognition", exc_info=True)
-                            await self._execute_on_speech_recognition_error(ex, session.session_id)
-
-                    if final_text:
-                        if self._validate_recognized_text:
-                            if validation := self._validate_recognized_text(final_text):
-                                if self.debug:
-                                    logger.info(f"Invalid recognized text: {final_text} / validation: {validation}")
-                                session.reset()
-                                return session.is_recording
-
-                        recorded_data = bytes(session.buffer)
-                        asyncio.create_task(self.execute_on_speech_detected(recorded_data, final_text, None, recorded_duration, session.session_id))
-                    else:
-                        if self.debug:
-                            logger.info("No text recognized, skipping")
+                    await self._emit_final_speech_detected(session, recorded_duration)
                 session.reset()
 
             elif session.record_duration >= self.max_duration:
@@ -274,21 +290,7 @@ class SileroStreamSpeechDetector(SileroSpeechDetector):
                     except Exception as ex:
                         logger.error("Error waiting for pending recognition", exc_info=True)
 
-                # Use last recognized text if available
-                final_text = session.last_recognized_text
-                if final_text:
-                    if self._validate_recognized_text:
-                        if validation := self._validate_recognized_text(final_text):
-                            if self.debug:
-                                logger.info(f"Invalid recognized text: {final_text} / validation: {validation}")
-                            session.reset()
-                            return session.is_recording
-
-                    recorded_data = bytes(session.buffer)
-                    asyncio.create_task(self.execute_on_speech_detected(recorded_data, final_text, None, session.record_duration, session.session_id))
-                else:
-                    if self.debug:
-                        logger.info("No text recognized at max duration, skipping")
+                await self._emit_final_speech_detected(session, session.record_duration)
                 session.reset()
 
         return session.is_recording

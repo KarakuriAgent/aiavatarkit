@@ -783,7 +783,7 @@ class LLMServiceDummy(LLMService):
             elif isinstance(messages[0]["content"], str):
                 messages[0]["content"] = self._update_context_filter(messages[0]["content"])
         messages.append({"role": "assistant", "content": response_text})
-        await self.context_manager.add_histories(context_id, messages, "dummy")
+        await self.context_manager.add_histories(context_id, messages, "dummy", user_id=user_id)
 
     async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None) -> AsyncGenerator[LLMResponse, None]:
         await asyncio.sleep(self.wait_sec)

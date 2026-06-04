@@ -18,7 +18,9 @@ from ...sts.tts import SpeechSynthesizer
 from ...sts.session_state_manager import SessionStateManager
 from ...sts.performance_recorder import PerformanceRecorder
 from ...sts.voice_recorder import VoiceRecorder
+from ...sts.audio_enhancement import AudioEnhancer
 from ...sts.voice_auth import VoiceAuthenticator
+from ...sts.addressing import AddressingDetector
 from ..models import AvatarControlRequest, AIAvatarRequest, AIAvatarResponse
 from ..base import Adapter
 
@@ -54,7 +56,9 @@ class AIAvatarWebSocketServer(Adapter):
         stt: SpeechRecognizer = None,
         llm: LLMService = None,
         tts: SpeechSynthesizer = None,
+        audio_enhancer: AudioEnhancer = None,
         voice_auth: VoiceAuthenticator = None,
+        addressing_detector: AddressingDetector = None,
 
         # STS Pipeline params for default components
         vad_volume_db_threshold: float = -50.0,
@@ -83,6 +87,10 @@ class AIAvatarWebSocketServer(Adapter):
         voice_recorder: VoiceRecorder = None,
         voice_recorder_enabled: bool = True,
         voice_recorder_dir: str = "recorded_voices",
+        audio_enhancement_fail_open: bool = True,
+        audio_enhancement_record_raw: bool = True,
+        audio_enhancement_record_enhanced: bool = True,
+        addressing_history_limit: int = 12,
         invoke_queue_idle_timeout: float = 10.0,
         invoke_timeout: float = 60.0,
         use_invoke_queue: bool = False,
@@ -136,7 +144,13 @@ class AIAvatarWebSocketServer(Adapter):
             voice_recorder=voice_recorder,
             voice_recorder_enabled=voice_recorder_enabled,
             voice_recorder_dir=voice_recorder_dir,
+            audio_enhancer=audio_enhancer,
+            audio_enhancement_fail_open=audio_enhancement_fail_open,
+            audio_enhancement_record_raw=audio_enhancement_record_raw,
+            audio_enhancement_record_enhanced=audio_enhancement_record_enhanced,
             voice_auth=voice_auth,
+            addressing_detector=addressing_detector,
+            addressing_history_limit=addressing_history_limit,
             invoke_queue_idle_timeout=invoke_queue_idle_timeout,
             invoke_timeout=invoke_timeout,
             use_invoke_queue=use_invoke_queue,

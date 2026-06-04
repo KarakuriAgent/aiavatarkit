@@ -39,7 +39,7 @@ services:
       - tts-cache:/app/.cache/tts
       - aivis-cache:/app/.cache/aivis_tts
       - app-data:/app/data
-      - recorded-voices:/app/recorded_voices
+      - ./recorded_voices:/app/recorded_voices
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
@@ -60,4 +60,3 @@ volumes:
   tts-cache:
   aivis-cache:
   app-data:
-  recorded-voices:

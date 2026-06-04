@@ -60,7 +60,7 @@ class HermesResponsesService(LLMService):
 
     async def update_context(self, context_id: str, user_id: str, messages: List[Dict], response_text: str):
         messages.append({"role": "assistant", "content": response_text})
-        await self.context_manager.add_histories(context_id, messages, "hermes_responses")
+        await self.context_manager.add_histories(context_id, messages, "hermes_responses", user_id=user_id)
 
     def _conversation_id(self, context_id: str, user_id: str, session_id: str = None) -> str:
         if self.conversation_id_source == "user_id":

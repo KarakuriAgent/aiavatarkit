@@ -129,7 +129,7 @@ class LiteLLMService(LLMService):
             elif isinstance(messages[0]["content"], str):
                 messages[0]["content"] = self._update_context_filter(messages[0]["content"])
         messages.append({"role": "assistant", "content": response_text})
-        await self.context_manager.add_histories(context_id, messages, "chatgpt")
+        await self.context_manager.add_histories(context_id, messages, "chatgpt", user_id=user_id)
 
     def tool(self, spec: Dict):
         def decorator(func):

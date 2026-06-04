@@ -154,7 +154,7 @@ class GeminiService(LLMService):
         if self._update_context_filter:
             if "text" in dict_messages[0]["parts"][-1]:
                 dict_messages[0]["parts"][-1]["text"] = self._update_context_filter(dict_messages[0]["parts"][-1]["text"])
-        await self.context_manager.add_histories(context_id, dict_messages, "gemini")
+        await self.context_manager.add_histories(context_id, dict_messages, "gemini", user_id=user_id)
 
     async def preflight(self):
         # Dummy request to initialize client (The first message takes long time)

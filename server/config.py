@@ -76,6 +76,15 @@ class Settings:
     vad_segment_silence_threshold: float
     vad_use_iterator: bool
 
+    audio_enhancement_enabled: bool
+    audio_enhancement_provider: str
+    audio_enhancement_command: str
+    audio_enhancement_model: str | None
+    audio_enhancement_timeout: float
+    audio_enhancement_fail_open: bool
+    audio_enhancement_record_raw: bool
+    audio_enhancement_record_enhanced: bool
+
     voice_auth_enabled: bool
     voice_auth_provider: str
     voice_auth_base_url: str | None
@@ -93,6 +102,18 @@ class Settings:
     voice_auth_allowed_users: List[str]
     voice_auth_fail_open: bool
     voice_auth_apply_cmn: bool
+
+    addressing_enabled: bool
+    addressing_provider: str
+    addressing_base_url: str | None
+    addressing_api_key: str | None
+    addressing_model: str | None
+    addressing_target_names: List[str]
+    addressing_primary_name: str | None
+    addressing_history_limit: int
+    addressing_timeout: float
+    addressing_fail_open: bool
+    addressing_min_confidence: float
 
     llm_provider: str
 
@@ -180,6 +201,14 @@ def load_settings(env_path: Path | None = None) -> Settings:
         vad_provider=os.environ.get("VAD_PROVIDER", "silero_stream"),
         vad_segment_silence_threshold=float(os.environ.get("VAD_SEGMENT_SILENCE_THRESHOLD", "0.05")),
         vad_use_iterator=bool_env("VAD_USE_ITERATOR", True),
+        audio_enhancement_enabled=bool_env("AUDIO_ENHANCEMENT_ENABLED", False),
+        audio_enhancement_provider=os.environ.get("AUDIO_ENHANCEMENT_PROVIDER", "deepfilternet"),
+        audio_enhancement_command="/usr/local/bin/deep-filter",
+        audio_enhancement_model=optional_env("AUDIO_ENHANCEMENT_MODEL"),
+        audio_enhancement_timeout=float(os.environ.get("AUDIO_ENHANCEMENT_TIMEOUT", "30")),
+        audio_enhancement_fail_open=bool_env("AUDIO_ENHANCEMENT_FAIL_OPEN", True),
+        audio_enhancement_record_raw=bool_env("AUDIO_ENHANCEMENT_RECORD_RAW", True),
+        audio_enhancement_record_enhanced=bool_env("AUDIO_ENHANCEMENT_RECORD_ENHANCED", True),
         voice_auth_enabled=bool_env("VOICE_AUTH_ENABLED", False),
         voice_auth_provider=os.environ.get("VOICE_AUTH_PROVIDER", "wespeaker_mlx"),
         voice_auth_base_url=optional_env("VOICE_AUTH_BASE_URL"),
@@ -197,6 +226,17 @@ def load_settings(env_path: Path | None = None) -> Settings:
         voice_auth_allowed_users=list_env("VOICE_AUTH_ALLOWED_USERS"),
         voice_auth_fail_open=bool_env("VOICE_AUTH_FAIL_OPEN", False),
         voice_auth_apply_cmn=bool_env("VOICE_AUTH_APPLY_CMN", True),
+        addressing_enabled=bool_env("ADDRESSING_ENABLED", False),
+        addressing_provider=os.environ.get("ADDRESSING_PROVIDER", "openai_compatible"),
+        addressing_base_url=optional_env("ADDRESSING_BASE_URL"),
+        addressing_api_key=optional_env("ADDRESSING_API_KEY"),
+        addressing_model=optional_env("ADDRESSING_MODEL"),
+        addressing_target_names=list_env("ADDRESSING_TARGET_NAMES"),
+        addressing_primary_name=optional_env("ADDRESSING_PRIMARY_NAME"),
+        addressing_history_limit=int(os.environ.get("ADDRESSING_HISTORY_LIMIT", "12")),
+        addressing_timeout=float(os.environ.get("ADDRESSING_TIMEOUT", "10")),
+        addressing_fail_open=bool_env("ADDRESSING_FAIL_OPEN", False),
+        addressing_min_confidence=float(os.environ.get("ADDRESSING_MIN_CONFIDENCE", "0")),
         llm_provider=os.environ.get("LLM_PROVIDER", "hermes"),
         tts_provider=os.environ.get("TTS_PROVIDER", "aivis"),
         tts_api_key=optional_env("TTS_API_KEY") or optional_env("IRODORI_API_KEY"),
