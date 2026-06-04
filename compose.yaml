@@ -12,6 +12,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
+      TTS_CACHE_DIR: ${TTS_CACHE_DIR:-/app/.cache/tts}
       AIVIS_TTS_CACHE_DIR: /app/.cache/aivis_tts
       AIAVATAR_DB_PATH: /app/data/aiavatar.db
       AIAVATAR_VOICE_RECORDER_DIR: /app/recorded_voices
@@ -35,6 +36,7 @@ services:
       - uv-venv:/app/.venv
       - uv-cache:/root/.cache/uv
       - torch-cache:/root/.cache/torch
+      - tts-cache:/app/.cache/tts
       - aivis-cache:/app/.cache/aivis_tts
       - app-data:/app/data
       - recorded-voices:/app/recorded_voices
@@ -55,6 +57,7 @@ volumes:
   uv-venv:
   uv-cache:
   torch-cache:
+  tts-cache:
   aivis-cache:
   app-data:
   recorded-voices:

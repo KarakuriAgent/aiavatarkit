@@ -73,10 +73,11 @@ class OpenAISpeechSynthesizer(SpeechSynthesizer):
             "model": self.model,
             "voice": self.speaker,
             "input": processed_text,
-            "instructions": self.instructions,
             # "speed": self.speed,
-            "response_format": "wav"
+            "response_format": self.audio_format
         }
+        if self.instructions:
+            json_body["instructions"] = self.instructions
 
         # Check cache
         cache_key = self.make_cache_key(url=url, headers=headers, json_body=json_body)

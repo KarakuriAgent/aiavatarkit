@@ -97,7 +97,14 @@ class Settings:
     llm_provider: str
 
     tts_provider: str
+    tts_api_key: str | None
+    tts_base_url: str
     tts_speaker: str
+    tts_model: str
+    tts_instructions: str | None
+    tts_response_format: str
+    tts_cache_dir: str | None
+    tts_timeout: float
     aivis_api_key: str | None
     aivis_model_uuid: str
     aivis_tts_url: str
@@ -192,7 +199,14 @@ def load_settings(env_path: Path | None = None) -> Settings:
         voice_auth_apply_cmn=bool_env("VOICE_AUTH_APPLY_CMN", True),
         llm_provider=os.environ.get("LLM_PROVIDER", "hermes"),
         tts_provider=os.environ.get("TTS_PROVIDER", "aivis"),
+        tts_api_key=optional_env("TTS_API_KEY") or optional_env("IRODORI_API_KEY"),
+        tts_base_url=os.environ.get("TTS_BASE_URL", "https://api.openai.com/v1"),
         tts_speaker=os.environ.get("TTS_SPEAKER", "coral"),
+        tts_model=os.environ.get("TTS_MODEL", "tts-1"),
+        tts_instructions=optional_env("TTS_INSTRUCTIONS"),
+        tts_response_format=os.environ.get("TTS_RESPONSE_FORMAT", "wav"),
+        tts_cache_dir=optional_env("TTS_CACHE_DIR"),
+        tts_timeout=float(os.environ.get("TTS_TIMEOUT", "30")),
         aivis_api_key=optional_env("AIVIS_API_KEY"),
         aivis_model_uuid=os.environ.get("AIVIS_MODEL_UUID", "261d7c95-11d4-4f0a-9053-4d28d3dd87ee"),
         aivis_tts_url=os.environ.get("AIVIS_TTS_URL", "https://api.aivis-project.com/v1/tts/synthesize"),
