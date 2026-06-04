@@ -15,7 +15,7 @@ from aiavatar.sts.voice_auth.wespeaker_mlx import WespeakerMlxVoiceAuthenticator
 from server.config import Settings, load_settings
 from server.logging_config import setup_logging
 
-logger = logging.getLogger("aiavatar.voice_auth_runtime")
+logger = logging.getLogger("aiavatar.provider.voice_auth.wespeaker_mlx")
 
 
 class VerifyRequest(BaseModel):
@@ -42,7 +42,7 @@ def read_wav_pcm(path: Path) -> tuple[bytes, int]:
 
 def ensure_model_available(settings: Settings) -> str:
     if not settings.voice_auth_model_path:
-        raise RuntimeError("VOICE_AUTH_MODEL_PATH is required for voice-auth-runtime")
+        raise RuntimeError("VOICE_AUTH_MODEL_PATH is required for wespeaker_mlx runtime")
 
     model_path = Path(settings.voice_auth_model_path)
     required_files = [
@@ -70,7 +70,7 @@ def ensure_model_available(settings: Settings) -> str:
     except Exception as ex:
         raise RuntimeError(
             "huggingface-hub is required to auto-download the voice auth model. "
-            "Run with `uv run --extra voice-auth voice-auth-runtime`."
+            "Run with `uv sync --extra voice-auth`."
         ) from ex
 
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,12 +89,12 @@ def ensure_model_available(settings: Settings) -> str:
     return str(model_path)
 
 
-class VoiceAuthRuntime:
+class WespeakerMlxRuntime:
     def __init__(self, settings: Settings):
         self.settings = settings
         model_path = ensure_model_available(settings)
         logger.info(
-            "Loading voice auth runtime: provider=wespeaker_mlx model_path=%s profile_dir=%s threshold=%.3f",
+            "Loading wespeaker_mlx runtime: model_path=%s profile_dir=%s threshold=%.3f",
             model_path,
             settings.voice_auth_profile_dir,
             settings.voice_auth_threshold,
@@ -112,7 +112,7 @@ class VoiceAuthRuntime:
             apply_cmn=settings.voice_auth_apply_cmn,
             debug=settings.debug,
         )
-        logger.info("Voice auth runtime loaded: profiles=%d", len(self.authenticator._profiles))
+        logger.info("wespeaker_mlx runtime loaded: profiles=%d", len(self.authenticator._profiles))
 
     async def verify(self, request: VerifyRequest):
         audio_bytes = base64.b64decode(request.audio_data)
@@ -172,12 +172,10 @@ class VoiceAuthRuntime:
         }
 
 
-# The runtime only serves voice auth, but load_settings() is shared with the
-# conversation server and requires HERMES_API_KEY there.
-os.environ.setdefault("HERMES_API_KEY", "unused-voice-auth-runtime")
+os.environ.setdefault("HERMES_API_KEY", "unused-wespeaker-mlx-runtime")
 settings = load_settings()
 setup_logging()
-runtime = VoiceAuthRuntime(settings)
+runtime = WespeakerMlxRuntime(settings)
 
 app = FastAPI()
 

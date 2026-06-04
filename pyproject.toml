@@ -44,18 +44,23 @@ voice-auth = [
   "torch>=2.8.0",
   "torchaudio>=2.8.0",
 ]
+qwen-stt = [
+  "mlx-qwen3-asr",
+]
 
 [project.scripts]
 server = "server.server:main"
 voice-auth-enroll = "server.voice_auth_enroll:main"
 voice-auth-server = "voice_auth_server.server:main"
-voice-auth-runtime = "voice_auth_runtime.server:main"
+voice-auth-runtime = "provider.voice_auth.wespeaker_mlx.server:main"
+wespeaker-mlx-runtime = "provider.voice_auth.wespeaker_mlx.server:main"
+qwen3-asr-mlx-runtime = "provider.stt.qwen3_asr_mlx.server:main"
 
 [project.urls]
 Homepage = "https://github.com/uezo/aiavatarkit"
 
 [tool.setuptools.packages.find]
-include = ["aiavatar*", "server*", "voice_auth_runtime*", "voice_auth_server*"]
+include = ["aiavatar*", "server*", "provider*", "voice_auth_server*"]
 exclude = ["examples*", "tests*"]
 
 [tool.setuptools.package-data]

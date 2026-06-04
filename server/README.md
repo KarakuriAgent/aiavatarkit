@@ -124,6 +124,39 @@ AIVIS_MODEL_UUID=261d7c95-11d4-4f0a-9053-4d28d3dd87ee
 {STT_BASE_URL}/audio/transcriptions
 ```
 
+### Local Provider Runtimes
+
+Apple Silicon の MLX provider は Docker コンテナ内ではなく、Mac ホスト上の provider runtime として起動します。会話サーバーからはHTTPで呼びます。
+
+Qwen3-ASR MLX を使う場合、`.env` では以下のように指定します。`STT_MODEL` を省略した場合も `STT_PROVIDER=qwen3_asr_mlx` では `Qwen/Qwen3-ASR-0.6B` が使われます。
+
+```env
+STT_PROVIDER=qwen3_asr_mlx
+STT_BASE_URL=http://host.docker.internal:8766/v1
+STT_MODEL=Qwen/Qwen3-ASR-0.6B
+STT_LANGUAGE=ja
+STT_RUNTIME_PORT=8766
+```
+
+ホストruntimeを起動します。
+
+```sh
+provider/start.sh
+provider/status.sh
+provider/status.sh --tail
+provider/stop.sh
+```
+
+精度優先にする場合は `STT_MODEL=Qwen/Qwen3-ASR-1.7B` に差し替えます。4bit/8bit に量子化したローカルモデルを使う場合も、`STT_MODEL=models/qwen3-asr-0.6b-4bit` のようにモデルディレクトリを指定できます。`provider/start.sh` は起動前にモデルを確認し、Hugging Face repo ID の場合はキャッシュへダウンロードします。ローカルパスが無い場合は `STT_MODEL_REPO` を指定すると、そのrepoを指定パスへダウンロードします。
+
+固有名詞や専門用語に寄せたい場合は、スペース区切りで `STT_CONTEXT` を設定します。
+
+```env
+STT_CONTEXT=Hermes AIAvatarKit StackChan
+```
+
+任意の既存Whisper互換サーバーを使う場合は `STT_PROVIDER=whisper_compatible` のまま `STT_BASE_URL` をそのサーバーに向けます。この場合 `provider/start.sh` はSTT runtimeを起動しません。
+
 ## Run
 
 Hermes、STT サーバー、Aivis Cloud API の設定を用意してから、リポジトリルートで起動します。
@@ -171,7 +204,7 @@ StackChan 側の `config.json` の `user_id` を固定してください。
 
 `VOICE_AUTH_ENABLED=true` にすると、VAD で確定した音声を STT / LLM に渡す前に登録済みユーザーの声と照合します。拒否された音声は `canceled` response になり、STT には送られません。
 
-最初の provider は `wespeaker_mlx` です。Apple Silicon では `Landon41/wespeaker-voxceleb-resnet34-LM-mlx` を使います。`voice-auth-runtime` は `VOICE_AUTH_MODEL_PATH` に必要ファイルが無い場合、起動時に `VOICE_AUTH_MODEL_REPO` から自動ダウンロードします。
+最初の provider は `wespeaker_mlx` です。Apple Silicon では `Landon41/wespeaker-voxceleb-resnet34-LM-mlx` を使います。`provider/start.sh` は `VOICE_AUTH_MODEL_PATH` に必要ファイルが無い場合、起動時に `VOICE_AUTH_MODEL_REPO` から自動ダウンロードします。
 
 手動で先に落とす場合は以下も使えます。
 
@@ -180,21 +213,19 @@ uv sync --extra voice-auth
 uv run huggingface-cli download --local-dir models/wespeaker-voxceleb-resnet34-LM-mlx Landon41/wespeaker-voxceleb-resnet34-LM-mlx
 ```
 
-Docker で会話サーバーや登録サーバーを動かす場合、MLX/Metal は Docker コンテナ内では使わず、Mac ホスト上で判定専用runtimeを常駐させます。
+Docker で会話サーバーや登録サーバーを動かす場合、MLX/Metal は Docker コンテナ内では使わず、Mac ホスト上でprovider runtimeを常駐させます。
 
 ```sh
-VOICE_AUTH_ENABLED=true uv run --extra voice-auth voice-auth-runtime
+provider/start.sh
 ```
 
-runtime はデフォルトで `0.0.0.0:8765` に起動します。Docker 側からは `http://host.docker.internal:8765` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。
-
-ホスト側runtimeをバックグラウンドで管理する場合は以下を使います。ログはデフォルトで `.voice_auth_runtime/logs/voice-auth-runtime.log` に追記されます。
+runtime はデフォルトで `0.0.0.0:8765` に起動します。Docker 側からは `http://host.docker.internal:8765` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。ログはデフォルトで `.provider/logs/` に追記されます。
 
 ```sh
-voice_auth_runtime/start.sh
-voice_auth_runtime/status.sh
-voice_auth_runtime/status.sh --tail
-voice_auth_runtime/stop.sh
+provider/start.sh
+provider/status.sh
+provider/status.sh --tail
+provider/stop.sh
 ```
 
 runtime のヘルスチェックは `GET /health` です。`AIAVATAR_API_KEY` または `VOICE_AUTH_API_KEY` を設定している場合、`Authorization: Bearer ...` が必要です。
@@ -205,7 +236,7 @@ curl -H "Authorization: Bearer $AIAVATAR_API_KEY" http://127.0.0.1:8765/health
 
 ```env
 VOICE_AUTH_ENABLED=true
-VOICE_AUTH_PROVIDER=http
+VOICE_AUTH_PROVIDER=wespeaker_mlx
 VOICE_AUTH_BASE_URL=http://host.docker.internal:8765
 # Optional. Defaults to AIAVATAR_API_KEY if empty.
 # VOICE_AUTH_API_KEY=
@@ -214,7 +245,7 @@ VOICE_AUTH_MODEL_REPO=Landon41/wespeaker-voxceleb-resnet34-LM-mlx
 VOICE_AUTH_AUTO_DOWNLOAD_MODEL=true
 VOICE_AUTH_PROFILE_DIR=data/voice_profiles
 VOICE_AUTH_ENROLLMENT_DIR=data/voice_auth_enrollment
-VOICE_AUTH_THRESHOLD=0.70
+VOICE_AUTH_THRESHOLD=0.65
 VOICE_AUTH_MIN_DURATION=1.2
 VOICE_AUTH_SAMPLE_RATE=16000
 VOICE_AUTH_REQUIRE_USER_ID=false
@@ -223,10 +254,9 @@ VOICE_AUTH_ALLOWED_USERS=user01
 VOICE_AUTH_FAIL_OPEN=false
 VOICE_AUTH_APPLY_CMN=true
 VOICE_AUTH_RUNTIME_PORT=8765
-# Optional runtime state/log paths used by start.sh/status.sh/stop.sh.
-# VOICE_AUTH_RUNTIME_STATE_DIR=.voice_auth_runtime
-# VOICE_AUTH_RUNTIME_LOG_DIR=.voice_auth_runtime/logs
-# VOICE_AUTH_RUNTIME_LOG_FILE=.voice_auth_runtime/logs/voice-auth-runtime.log
+# Optional provider runtime state/log paths.
+# PROVIDER_STATE_DIR=.provider
+# PROVIDER_LOG_DIR=.provider/logs
 ```
 
 登録profileは `VOICE_AUTH_PROFILE_DIR` の `{user_id}.npz` として読み込みます。中には `embedding` という 256 次元の L2 normalize 済み vector を保存してください。会話時の自動登録は行いません。
@@ -236,7 +266,7 @@ VOICE_AUTH_RUNTIME_PORT=8765
 音声登録時は本番会話サーバーを停止して、同じ `.env` と同じ `HOST_PORT` で登録サーバーを起動します。StackChan 側の接続先は変えません。
 
 ```sh
-VOICE_AUTH_ENABLED=true uv run --extra voice-auth voice-auth-runtime
+VOICE_AUTH_ENABLED=true VOICE_AUTH_PROVIDER=wespeaker_mlx provider/start.sh
 docker compose down
 docker compose -f compose.voice-auth.yml up --build
 ```

@@ -71,12 +71,15 @@ def create_stt(settings: Settings):
             openai_api_key=settings.openai_api_key,
             language=settings.stt_language,
         )
-    if settings.stt_provider == "whisper_compatible":
+    if settings.stt_provider in ("whisper_compatible", "qwen3_asr_mlx"):
         if not settings.stt_base_url:
-            raise ValueError("STT_BASE_URL is required when STT_PROVIDER=whisper_compatible")
+            raise ValueError(f"STT_BASE_URL is required when STT_PROVIDER={settings.stt_provider}")
+        api_key = settings.stt_api_key
+        if settings.stt_provider == "qwen3_asr_mlx":
+            api_key = api_key or settings.aiavatar_api_key
         return WhisperCompatibleSpeechRecognizer(
             base_url=settings.stt_base_url,
-            api_key=settings.stt_api_key,
+            api_key=api_key,
             model=settings.stt_model,
             min_data_length=settings.stt_min_data_length,
             sample_rate=settings.stt_sample_rate,

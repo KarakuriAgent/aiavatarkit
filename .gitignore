@@ -158,6 +158,7 @@ aiavatar.db
 aivis_tts_cache/
 recorded_voices/
 .voice_auth_runtime/
+.provider/
 models/
 data/voice_profiles/
 data/voice_auth_enrollment/

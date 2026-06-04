@@ -45,6 +45,11 @@ def list_env(name: str, default: List[str] = None) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def optional_int_env(name: str) -> int | None:
+    value = os.environ.get(name)
+    return int(value) if value else None
+
+
 @dataclass(frozen=True)
 class Settings:
     openai_api_key: str | None
@@ -64,6 +69,8 @@ class Settings:
     stt_min_data_length: int
     stt_sample_rate: int
     stt_timeout: float
+    stt_context: str | None
+    stt_max_new_tokens: int | None
 
     vad_provider: str
     vad_segment_silence_threshold: float
@@ -139,6 +146,11 @@ def load_settings(env_path: Path | None = None) -> Settings:
 
     discord_sync_user_id = os.environ.get("DISCORD_SYNC_USER_ID", "robo-kanon-stack-chan")
     discord_voice_message_prefix = os.environ.get("DISCORD_VOICE_MESSAGE_PREFIX", "🎙️ ")
+    stt_provider = os.environ.get("STT_PROVIDER", "whisper_compatible")
+    stt_default_model = "Qwen/Qwen3-ASR-0.6B" if stt_provider == "qwen3_asr_mlx" else "whisperkit"
+    stt_model = os.environ.get("STT_MODEL", stt_default_model)
+    if stt_provider == "qwen3_asr_mlx" and stt_model == "whisperkit":
+        stt_model = stt_default_model
     return Settings(
         openai_api_key=optional_env("OPENAI_API_KEY"),
         hermes_api_key=required_env("HERMES_API_KEY"),
@@ -148,14 +160,16 @@ def load_settings(env_path: Path | None = None) -> Settings:
         hermes_conversation_id_source=os.environ.get("HERMES_CONVERSATION_ID_SOURCE", "user_id"),
         hermes_store=bool_env("HERMES_STORE", True),
         hermes_reasoning_effort=optional_env("HERMES_REASONING_EFFORT"),
-        stt_provider=os.environ.get("STT_PROVIDER", "whisper_compatible"),
+        stt_provider=stt_provider,
         stt_base_url=optional_env("STT_BASE_URL"),
         stt_api_key=optional_env("STT_API_KEY"),
-        stt_model=os.environ.get("STT_MODEL", "whisperkit"),
+        stt_model=stt_model,
         stt_language=os.environ.get("STT_LANGUAGE", "ja"),
         stt_min_data_length=int(os.environ.get("STT_MIN_DATA_LENGTH", "4096")),
         stt_sample_rate=int(os.environ.get("STT_SAMPLE_RATE", "16000")),
         stt_timeout=float(os.environ.get("STT_TIMEOUT", "30")),
+        stt_context=optional_env("STT_CONTEXT"),
+        stt_max_new_tokens=optional_int_env("STT_MAX_NEW_TOKENS"),
         vad_provider=os.environ.get("VAD_PROVIDER", "silero_stream"),
         vad_segment_silence_threshold=float(os.environ.get("VAD_SEGMENT_SILENCE_THRESHOLD", "0.05")),
         vad_use_iterator=bool_env("VAD_USE_ITERATOR", True),
@@ -168,7 +182,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         voice_auth_auto_download_model=bool_env("VOICE_AUTH_AUTO_DOWNLOAD_MODEL", True),
         voice_auth_profile_dir=os.environ.get("VOICE_AUTH_PROFILE_DIR", "data/voice_profiles"),
         voice_auth_enrollment_dir=os.environ.get("VOICE_AUTH_ENROLLMENT_DIR", "data/voice_auth_enrollment"),
-        voice_auth_threshold=float(os.environ.get("VOICE_AUTH_THRESHOLD", "0.70")),
+        voice_auth_threshold=float(os.environ.get("VOICE_AUTH_THRESHOLD", "0.65")),
         voice_auth_min_duration=float(os.environ.get("VOICE_AUTH_MIN_DURATION", "1.2")),
         voice_auth_sample_rate=int(os.environ.get("VOICE_AUTH_SAMPLE_RATE", "16000")),
         voice_auth_require_user_id=bool_env("VOICE_AUTH_REQUIRE_USER_ID", True),

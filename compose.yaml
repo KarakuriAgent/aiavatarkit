@@ -43,7 +43,7 @@ services:
     command:
       - sh
       - -c
-      - 'if [ "$$VOICE_AUTH_PROVIDER" = "wespeaker_mlx" ]; then EXTRA="--extra voice-auth"; else EXTRA=""; fi; uv sync --frozen $$EXTRA && uv run uvicorn server.server:app --host 0.0.0.0 --port 8000 --reload'
+      - 'uv sync --frozen && uv run uvicorn server.server:app --host 0.0.0.0 --port 8000 --reload'
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
       interval: 10s

@@ -16,13 +16,16 @@ setup(
     install_requires=["httpx>=0.27.0", "openai>=1.55.3", "aiofiles>=24.1.0", "numpy>=2.2.3", "PyAudio>=0.2.14", "python-multipart>=0.0.20", "silero-vad>=6.0.0"],
     extras_require={
         "voice-auth": ["huggingface-hub[hf_xet]>=0.24.0", "mlx>=0.28.0", "torch>=2.8.0", "torchaudio>=2.8.0"],
+        "qwen-stt": ["mlx-qwen3-asr"],
     },
     entry_points={
         "console_scripts": [
             "server=server.server:main",
             "voice-auth-enroll=server.voice_auth_enroll:main",
             "voice-auth-server=voice_auth_server.server:main",
-            "voice-auth-runtime=voice_auth_runtime.server:main",
+            "voice-auth-runtime=provider.voice_auth.wespeaker_mlx.server:main",
+            "wespeaker-mlx-runtime=provider.voice_auth.wespeaker_mlx.server:main",
+            "qwen3-asr-mlx-runtime=provider.stt.qwen3_asr_mlx.server:main",
         ],
     },
     license="Apache v2",

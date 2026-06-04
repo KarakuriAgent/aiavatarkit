@@ -4,14 +4,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional
-from urllib.parse import quote
 from uuid import uuid4
-
-import numpy as np
 
 from server.config import Settings
 from aiavatar.sts.voice_auth.http import HttpVoiceAuthenticator
-from aiavatar.sts.voice_auth.wespeaker_mlx import WespeakerMlxVoiceAuthenticator
 
 
 @dataclass
@@ -38,7 +34,6 @@ class VoiceEnrollmentManager:
         self.candidate_dir.mkdir(parents=True, exist_ok=True)
         self.reading_enabled = False
         self._candidates: Dict[str, CandidateVoice] = {}
-        self._auth: Optional[WespeakerMlxVoiceAuthenticator] = None
         self._http_auth: Optional[HttpVoiceAuthenticator] = None
         self._lock = Lock()
         self._load_existing_candidates()
@@ -124,7 +119,7 @@ class VoiceEnrollmentManager:
             raise ValueError("candidate_ids is required")
 
         candidates = [self.get_candidate(candidate_id) for candidate_id in candidate_ids]
-        if self.settings.voice_auth_provider == "http":
+        if self.settings.voice_auth_provider in ("http", "wespeaker_mlx"):
             auth = self._get_http_auth()
             wav_files = [
                 (Path(candidate.path).name, Path(candidate.path).read_bytes())
@@ -132,20 +127,14 @@ class VoiceEnrollmentManager:
             ]
             return await auth.enroll_wavs(user_id=user_id, wav_files=wav_files)
 
-        samples = [self._read_wav_pcm(Path(candidate.path)) for candidate in candidates]
-        self._get_auth().enroll_user_from_pcm(user_id, samples)
-        return {
-            "user_id": user_id,
-            "samples": len(samples),
-            "profile_path": str(Path(self.settings.voice_auth_profile_dir) / f"{quote(user_id, safe='')}.npz"),
-        }
+        raise ValueError(f"Unsupported VOICE_AUTH_PROVIDER: {self.settings.voice_auth_provider}")
 
     def _get_http_auth(self) -> HttpVoiceAuthenticator:
         with self._lock:
             if self._http_auth:
                 return self._http_auth
             if not self.settings.voice_auth_base_url:
-                raise ValueError("VOICE_AUTH_BASE_URL is required when VOICE_AUTH_PROVIDER=http")
+                raise ValueError(f"VOICE_AUTH_BASE_URL is required when VOICE_AUTH_PROVIDER={self.settings.voice_auth_provider}")
             self._http_auth = HttpVoiceAuthenticator(
                 base_url=self.settings.voice_auth_base_url,
                 api_key=self.settings.voice_auth_api_key or self.settings.aiavatar_api_key,
@@ -153,29 +142,6 @@ class VoiceEnrollmentManager:
                 debug=self.settings.debug,
             )
             return self._http_auth
-
-    def _get_auth(self) -> WespeakerMlxVoiceAuthenticator:
-        with self._lock:
-            if self._auth:
-                return self._auth
-            if self.settings.voice_auth_provider != "wespeaker_mlx":
-                raise ValueError(f"Unsupported VOICE_AUTH_PROVIDER: {self.settings.voice_auth_provider}")
-            if not self.settings.voice_auth_model_path:
-                raise ValueError("VOICE_AUTH_MODEL_PATH is required to enroll voice profiles")
-            self._auth = WespeakerMlxVoiceAuthenticator(
-                model_path=self.settings.voice_auth_model_path,
-                profile_dir=self.settings.voice_auth_profile_dir,
-                threshold=self.settings.voice_auth_threshold,
-                min_duration=self.settings.voice_auth_min_duration,
-                target_sample_rate=self.settings.voice_auth_sample_rate,
-                require_user_id=False,
-                allow_identification=True,
-                allowed_users=self.settings.voice_auth_allowed_users,
-                fail_open=self.settings.voice_auth_fail_open,
-                apply_cmn=self.settings.voice_auth_apply_cmn,
-                debug=self.settings.debug,
-            )
-            return self._auth
 
     @staticmethod
     def _write_wav(path: Path, audio_bytes: bytes, sample_rate: int):
@@ -185,18 +151,3 @@ class VoiceEnrollmentManager:
             wf.setsampwidth(2)
             wf.setframerate(sample_rate)
             wf.writeframes(audio_bytes)
-
-    @staticmethod
-    def _read_wav_pcm(path: Path) -> tuple[bytes, int]:
-        with wave.open(str(path), "rb") as wf:
-            channels = wf.getnchannels()
-            sample_width = wf.getsampwidth()
-            sample_rate = wf.getframerate()
-            frames = wf.readframes(wf.getnframes())
-        if sample_width != 2:
-            raise ValueError(f"{path}: only 16-bit PCM WAV is supported")
-        if channels == 1:
-            return frames, sample_rate
-        samples = np.frombuffer(frames, dtype=np.int16).reshape(-1, channels)
-        mono = samples.mean(axis=1).astype(np.int16)
-        return mono.tobytes(), sample_rate
