@@ -23,6 +23,7 @@ dependencies = [
   "openai>=1.55.3",
   "python-multipart>=0.0.20",
   "silero-vad>=6.0.0",
+  "ten-vad>=1.0.6",
   "uvicorn>=0.30.0",
   "websockets>=13.0",
 ]
@@ -55,6 +56,7 @@ voice-auth-server = "voice_auth_server.server:main"
 voice-auth-runtime = "provider.voice_auth.wespeaker_mlx.server:main"
 wespeaker-mlx-runtime = "provider.voice_auth.wespeaker_mlx.server:main"
 qwen3-asr-mlx-runtime = "provider.stt.qwen3_asr_mlx.server:main"
+tenvad-runtime = "provider.vad.tenvad.server:main"
 
 [project.urls]
 Homepage = "https://github.com/uezo/aiavatarkit"

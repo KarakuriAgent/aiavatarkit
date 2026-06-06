@@ -6,6 +6,7 @@ from aiavatar.sts.audio_enhancement import DeepFilterNetAudioEnhancer
 from server.config import load_settings
 from server.providers.audio_enhancement import create_audio_enhancer
 from server.providers.addressing import create_addressing_detector
+from server.providers import vad as vad_provider
 from server.providers.voice_auth import create_voice_auth
 
 
@@ -145,3 +146,67 @@ def test_audio_enhancement_provider_maps_to_deepfilternet(tmp_path, monkeypatch)
     assert enhancer.command == "/usr/local/bin/deep-filter"
     assert enhancer.model == "DeepFilterNet2"
     assert enhancer.timeout == 12
+
+
+def test_vad_provider_maps_tenvad_from_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("VAD_PROVIDER", raising=False)
+    monkeypatch.delenv("VAD_BASE_URL", raising=False)
+    monkeypatch.delenv("VAD_THRESHOLD", raising=False)
+    monkeypatch.delenv("VAD_NEG_THRESHOLD", raising=False)
+    monkeypatch.delenv("VAD_MIN_SPEECH_MS", raising=False)
+    monkeypatch.delenv("VAD_MIN_SILENCE_MS", raising=False)
+    monkeypatch.delenv("VAD_SPEECH_PAD_MS", raising=False)
+    monkeypatch.delenv("VAD_HOP_SIZE", raising=False)
+    monkeypatch.delenv("VAD_SEGMENT_SILENCE_THRESHOLD", raising=False)
+
+    class DummyTenVadStreamSpeechDetector:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    def dummy_tenvad_factory(**kwargs):
+        dummy_tenvad_factory.kwargs = kwargs
+        return "tenvad-session-factory"
+
+    dummy_tenvad_factory.kwargs = {}
+
+    monkeypatch.setattr(
+        vad_provider,
+        "TenVadStreamSpeechDetector",
+        DummyTenVadStreamSpeechDetector,
+    )
+    monkeypatch.setattr(vad_provider, "make_http_tenvad_session_factory", dummy_tenvad_factory)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "HERMES_API_KEY=test-hermes-key",
+                "VAD_PROVIDER=tenvad",
+                "VAD_BASE_URL=http://vad-runtime:8767",
+                "VAD_THRESHOLD=0.28",
+                "VAD_NEG_THRESHOLD=0.14",
+                "VAD_MIN_SPEECH_MS=500",
+                "VAD_MIN_SILENCE_MS=270",
+                "VAD_SPEECH_PAD_MS=120",
+                "VAD_HOP_SIZE=256",
+                "VAD_SEGMENT_SILENCE_THRESHOLD=0.12",
+            ]
+        )
+    )
+    stt = object()
+
+    detector = vad_provider.create_vad(load_settings(env_path), stt)
+
+    assert isinstance(detector, DummyTenVadStreamSpeechDetector)
+    assert dummy_tenvad_factory.kwargs["base_url"] == "http://vad-runtime:8767"
+    assert dummy_tenvad_factory.kwargs["neg_threshold"] == 0.14
+    assert detector.kwargs["speech_recognizer"] is stt
+    assert detector.kwargs["segment_silence_threshold"] == 0.12
+    assert detector.kwargs["silence_duration_threshold"] == 0.27
+    assert detector.kwargs["min_duration"] == 0.5
+    assert detector.kwargs["speech_probability_threshold"] == 0.28
+    assert detector.kwargs["negative_speech_probability_threshold"] == 0.14
+    assert detector.kwargs["hop_size"] == 256
+    assert detector.kwargs["speech_pad_ms"] == 120
+    assert detector.kwargs["ten_vad_class"] == "tenvad-session-factory"

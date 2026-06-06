@@ -16,6 +16,7 @@ done < <(provider_enabled_runtimes)
 
 if [ "$started" -eq 0 ]; then
   echo "No local provider runtime selected."
+  echo "VAD_PROVIDER=${VAD_PROVIDER:-}"
   echo "STT_PROVIDER=${STT_PROVIDER:-}"
   echo "VOICE_AUTH_ENABLED=${VOICE_AUTH_ENABLED:-false}"
   echo "VOICE_AUTH_PROVIDER=${VOICE_AUTH_PROVIDER:-}"

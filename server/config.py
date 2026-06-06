@@ -50,6 +50,11 @@ def optional_int_env(name: str) -> int | None:
     return int(value) if value else None
 
 
+def optional_float_env(name: str) -> float | None:
+    value = os.environ.get(name)
+    return float(value) if value else None
+
+
 @dataclass(frozen=True)
 class Settings:
     openai_api_key: str | None
@@ -73,6 +78,15 @@ class Settings:
     stt_max_new_tokens: int | None
 
     vad_provider: str
+    vad_base_url: str | None
+    vad_api_key: str | None
+    vad_threshold: float
+    vad_neg_threshold: float | None
+    vad_hop_size: int
+    vad_min_speech_ms: int
+    vad_min_silence_ms: int
+    vad_speech_pad_ms: int
+    vad_timeout: float
     vad_segment_silence_threshold: float
     vad_use_iterator: bool
 
@@ -199,6 +213,15 @@ def load_settings(env_path: Path | None = None) -> Settings:
         stt_context=optional_env("STT_CONTEXT"),
         stt_max_new_tokens=optional_int_env("STT_MAX_NEW_TOKENS"),
         vad_provider=os.environ.get("VAD_PROVIDER", "silero_stream"),
+        vad_base_url=optional_env("VAD_BASE_URL"),
+        vad_api_key=optional_env("VAD_API_KEY"),
+        vad_threshold=float(os.environ.get("VAD_THRESHOLD", "0.5")),
+        vad_neg_threshold=optional_float_env("VAD_NEG_THRESHOLD"),
+        vad_hop_size=int(os.environ.get("VAD_HOP_SIZE", "256")),
+        vad_min_speech_ms=int(os.environ.get("VAD_MIN_SPEECH_MS", "200")),
+        vad_min_silence_ms=int(os.environ.get("VAD_MIN_SILENCE_MS", "500")),
+        vad_speech_pad_ms=int(os.environ.get("VAD_SPEECH_PAD_MS", "0")),
+        vad_timeout=float(os.environ.get("VAD_TIMEOUT", "5")),
         vad_segment_silence_threshold=float(os.environ.get("VAD_SEGMENT_SILENCE_THRESHOLD", "0.05")),
         vad_use_iterator=bool_env("VAD_USE_ITERATOR", True),
         audio_enhancement_enabled=bool_env("AUDIO_ENHANCEMENT_ENABLED", False),

@@ -157,6 +157,23 @@ STT_CONTEXT=Hermes AIAvatarKit StackChan
 
 任意の既存Whisper互換サーバーを使う場合は `STT_PROVIDER=whisper_compatible` のまま `STT_BASE_URL` をそのサーバーに向けます。この場合 `provider/start.sh` はSTT runtimeを起動しません。
 
+### VAD Provider
+
+VAD は `.env` の `VAD_PROVIDER` で切り替えます。`silero_stream` または `silero` で Silero、`tenvad` でホスト側 TenVAD runtime を使います。TenVAD は Docker コンテナ内で native module を直接ロードせず、`provider/start.sh` で起動した runtime を HTTP 経由で呼びます。
+
+```env
+VAD_PROVIDER=tenvad
+VAD_BASE_URL=http://host.docker.internal:8767
+VAD_RUNTIME_PORT=8767
+VAD_THRESHOLD=0.28004092741980235
+VAD_NEG_THRESHOLD=0.14651703647268957
+VAD_MIN_SPEECH_MS=500
+VAD_MIN_SILENCE_MS=270
+VAD_SPEECH_PAD_MS=120
+VAD_HOP_SIZE=256
+VAD_SEGMENT_SILENCE_THRESHOLD=0.05
+```
+
 ## Run
 
 Hermes、STT サーバー、Aivis Cloud API の設定を用意してから、リポジトリルートで起動します。
@@ -244,7 +261,7 @@ Docker で会話サーバーや登録サーバーを動かす場合、MLX/Metal 
 provider/start.sh
 ```
 
-runtime はデフォルトで `0.0.0.0:8765` に起動します。Docker 側からは `http://host.docker.internal:8765` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。ログはデフォルトで `.provider/logs/` に追記されます。
+runtime は voice auth がデフォルトで `0.0.0.0:8765`、Qwen3-ASR が `0.0.0.0:8766`、TenVAD が `0.0.0.0:8767` に起動します。Docker 側からは `http://host.docker.internal:<port>` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。ログはデフォルトで `.provider/logs/` に追記されます。
 
 ```sh
 provider/start.sh
@@ -253,7 +270,7 @@ provider/status.sh --tail
 provider/stop.sh
 ```
 
-runtime のヘルスチェックは `GET /health` です。`AIAVATAR_API_KEY` または `VOICE_AUTH_API_KEY` を設定している場合、`Authorization: Bearer ...` が必要です。
+runtime のヘルスチェックは `GET /health` です。`AIAVATAR_API_KEY`、`VAD_API_KEY`、`VOICE_AUTH_API_KEY` などを設定している場合、`Authorization: Bearer ...` が必要です。
 
 ```sh
 curl -H "Authorization: Bearer $AIAVATAR_API_KEY" http://127.0.0.1:8765/health

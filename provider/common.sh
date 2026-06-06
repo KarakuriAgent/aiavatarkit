@@ -62,6 +62,7 @@ provider_load_env() {
   : "${PROVIDER_STOP_TIMEOUT:=15}"
   : "${STT_RUNTIME_PORT:=8766}"
   : "${VOICE_AUTH_RUNTIME_PORT:=8765}"
+  : "${VAD_RUNTIME_PORT:=8767}"
 
   export PROVIDER_STATE_DIR
   export PROVIDER_LOG_DIR
@@ -69,9 +70,14 @@ provider_load_env() {
   export PROVIDER_STOP_TIMEOUT
   export STT_RUNTIME_PORT
   export VOICE_AUTH_RUNTIME_PORT
+  export VAD_RUNTIME_PORT
 }
 
 provider_enabled_runtimes() {
+  if [ "${VAD_PROVIDER:-}" = "tenvad" ]; then
+    echo "vad/tenvad"
+  fi
+
   if [ "${STT_PROVIDER:-}" = "qwen3_asr_mlx" ]; then
     echo "stt/qwen3_asr_mlx"
   fi
@@ -82,6 +88,7 @@ provider_enabled_runtimes() {
 }
 
 provider_known_runtimes() {
+  echo "vad/tenvad"
   echo "stt/qwen3_asr_mlx"
   echo "voice_auth/wespeaker_mlx"
 }
@@ -90,6 +97,18 @@ provider_runtime_config() {
   local runtime="$1"
 
   case "$runtime" in
+    vad/tenvad)
+      PROVIDER_RUNTIME_NAME="tenvad"
+      PROVIDER_RUNTIME_TITLE="TenVAD VAD"
+      PROVIDER_RUNTIME_COMMAND="${TENVAD_RUNTIME_COMMAND:-$PROVIDER_REPO_ROOT/.venv/bin/tenvad-runtime}"
+      PROVIDER_RUNTIME_EXTRA=""
+      PROVIDER_RUNTIME_PID_FILE="$PROVIDER_STATE_DIR/tenvad.pid"
+      PROVIDER_RUNTIME_LOG_FILE="$PROVIDER_LOG_DIR/tenvad.log"
+      PROVIDER_RUNTIME_HEALTH_URL="${VAD_RUNTIME_HEALTH_URL:-http://127.0.0.1:$VAD_RUNTIME_PORT/health}"
+      PROVIDER_RUNTIME_API_KEY="${VAD_API_KEY:-${AIAVATAR_API_KEY:-}}"
+      PROVIDER_RUNTIME_PROCESS_MATCH="tenvad-runtime"
+      PROVIDER_RUNTIME_PRESTART=""
+      ;;
     stt/qwen3_asr_mlx)
       PROVIDER_RUNTIME_NAME="qwen3_asr_mlx"
       PROVIDER_RUNTIME_TITLE="Qwen3-ASR MLX STT"
@@ -304,11 +323,14 @@ provider_launchd_stop_runtime() {
 
 provider_sync_enabled_extras() {
   local extras="" runtime extra
+  local runtime_seen=0
   local -a args=()
   while IFS= read -r runtime; do
     [ -n "$runtime" ] || continue
+    runtime_seen=1
     provider_runtime_config "$runtime"
     extra="$PROVIDER_RUNTIME_EXTRA"
+    [ -n "$extra" ] || continue
     case " $extras " in
       *" $extra "*)
         ;;
@@ -318,7 +340,7 @@ provider_sync_enabled_extras() {
     esac
   done < <(provider_enabled_runtimes)
 
-  if [ -z "$(provider_trim "$extras")" ]; then
+  if [ "$runtime_seen" -eq 0 ]; then
     return 0
   fi
 
