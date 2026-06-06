@@ -6,6 +6,7 @@ from aiavatar.sts.audio_enhancement import DeepFilterNetAudioEnhancer
 from server.config import load_settings
 from server.providers.audio_enhancement import create_audio_enhancer, create_required_audio_enhancer
 from server.providers.addressing import create_addressing_detector
+from server.providers import pre_vad_noise_suppression as pre_vad_provider
 from server.providers import vad as vad_provider
 from server.providers.voice_auth import create_voice_auth
 
@@ -146,6 +147,58 @@ def test_audio_enhancement_provider_maps_to_deepfilternet(tmp_path, monkeypatch)
     assert enhancer.command == "/usr/local/bin/deep-filter"
     assert enhancer.model == "DeepFilterNet2"
     assert enhancer.timeout == 12
+
+
+def test_pre_vad_noise_suppression_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("PRE_VAD_NOISE_SUPPRESSION_ENABLED", raising=False)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("HERMES_API_KEY=test-hermes-key")
+
+    processor = pre_vad_provider.create_pre_vad_audio_processor(load_settings(env_path))
+
+    assert processor is None
+
+
+def test_pre_vad_noise_suppression_provider_maps_to_webrtc_noise_gain(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("PRE_VAD_NOISE_SUPPRESSION_ENABLED", raising=False)
+    monkeypatch.delenv("PRE_VAD_NOISE_SUPPRESSION_PROVIDER", raising=False)
+    monkeypatch.delenv("PRE_VAD_NOISE_SUPPRESSION_LEVEL", raising=False)
+    monkeypatch.delenv("PRE_VAD_AUTO_GAIN_DBFS", raising=False)
+    monkeypatch.delenv("PRE_VAD_NOISE_SUPPRESSION_FAIL_OPEN", raising=False)
+
+    class DummyWebRtcNoiseGainAudioProcessor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        pre_vad_provider,
+        "WebRtcNoiseGainAudioProcessor",
+        DummyWebRtcNoiseGainAudioProcessor,
+    )
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "HERMES_API_KEY=test-hermes-key",
+                "PRE_VAD_NOISE_SUPPRESSION_ENABLED=true",
+                "PRE_VAD_NOISE_SUPPRESSION_PROVIDER=webrtc_noise_gain",
+                "PRE_VAD_NOISE_SUPPRESSION_LEVEL=4",
+                "PRE_VAD_AUTO_GAIN_DBFS=0",
+                "PRE_VAD_NOISE_SUPPRESSION_FAIL_OPEN=false",
+            ]
+        )
+    )
+
+    processor = pre_vad_provider.create_pre_vad_audio_processor(load_settings(env_path))
+
+    assert isinstance(processor, DummyWebRtcNoiseGainAudioProcessor)
+    assert processor.kwargs["noise_suppression_level"] == 4
+    assert processor.kwargs["auto_gain_dbfs"] == 0
+    assert processor.kwargs["fail_open"] is False
 
 
 def test_vad_provider_maps_tenvad_from_env(tmp_path, monkeypatch):

@@ -30,6 +30,12 @@ async def health():
         "audio_enhancement_enabled": settings.audio_enhancement_enabled,
         "audio_enhancement_provider": settings.audio_enhancement_provider if settings.audio_enhancement_enabled else None,
         "audio_enhancement_command_available": audio_enhancement_command_available,
+        "pre_vad_noise_suppression_enabled": settings.pre_vad_noise_suppression_enabled,
+        "pre_vad_noise_suppression_provider": (
+            settings.pre_vad_noise_suppression_provider
+            if settings.pre_vad_noise_suppression_enabled
+            else None
+        ),
         "voice_auth_enabled": settings.voice_auth_enabled,
         "voice_auth_provider": settings.voice_auth_provider if settings.voice_auth_enabled else None,
     }

@@ -4,6 +4,7 @@ from .config import Settings
 from .providers.llm import create_llm
 from .providers.audio_enhancement import create_audio_enhancer
 from .providers.addressing import create_addressing_detector
+from .providers.pre_vad_noise_suppression import create_pre_vad_audio_processor
 from .providers.stt import create_stt
 from .providers.tts import create_tts
 from .providers.vad import create_vad
@@ -15,6 +16,7 @@ def create_aiavatar_app(settings: Settings):
     vad = create_vad(settings, stt)
     llm = create_llm(settings)
     tts = create_tts(settings)
+    pre_vad_audio_processor = create_pre_vad_audio_processor(settings)
     audio_enhancer = create_audio_enhancer(settings)
     voice_auth = create_voice_auth(settings)
     addressing_detector = create_addressing_detector(settings)
@@ -24,6 +26,7 @@ def create_aiavatar_app(settings: Settings):
         stt=stt,
         llm=llm,
         tts=tts,
+        pre_vad_audio_processor=pre_vad_audio_processor,
         audio_enhancer=audio_enhancer,
         audio_enhancement_fail_open=settings.audio_enhancement_fail_open,
         audio_enhancement_record_raw=settings.audio_enhancement_record_raw,

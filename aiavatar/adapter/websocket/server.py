@@ -18,6 +18,7 @@ from ...sts.tts import SpeechSynthesizer
 from ...sts.session_state_manager import SessionStateManager
 from ...sts.performance_recorder import PerformanceRecorder
 from ...sts.voice_recorder import VoiceRecorder
+from ...sts.audio_preprocessing import StreamingAudioProcessor
 from ...sts.audio_enhancement import AudioEnhancer
 from ...sts.voice_auth import VoiceAuthenticator
 from ...sts.addressing import AddressingDetector
@@ -56,6 +57,7 @@ class AIAvatarWebSocketServer(Adapter):
         stt: SpeechRecognizer = None,
         llm: LLMService = None,
         tts: SpeechSynthesizer = None,
+        pre_vad_audio_processor: StreamingAudioProcessor = None,
         audio_enhancer: AudioEnhancer = None,
         voice_auth: VoiceAuthenticator = None,
         addressing_detector: AddressingDetector = None,
@@ -172,6 +174,7 @@ class AIAvatarWebSocketServer(Adapter):
 
         # WebSocket processing
         self.response_audio_chunk_size = response_audio_chunk_size
+        self.pre_vad_audio_processor = pre_vad_audio_processor
 
         # API Key
         self.api_key = api_key
@@ -212,6 +215,9 @@ class AIAvatarWebSocketServer(Adapter):
     def get_config(self) -> dict:
         return {
             "response_audio_chunk_size": self.response_audio_chunk_size,
+            "pre_vad_audio_processor": self.pre_vad_audio_processor.get_config()
+            if self.pre_vad_audio_processor
+            else None,
             "debug": self.debug,
         }
 
@@ -249,6 +255,8 @@ class AIAvatarWebSocketServer(Adapter):
             session_data.id = request.session_id
 
             logger.info(f"WebSocket connected for session: {request.session_id}")
+            if self.pre_vad_audio_processor:
+                self.pre_vad_audio_processor.reset_session(request.session_id)
 
             for on_session_start in self._on_session_start_handlers:
                 await on_session_start(request, session_data)
@@ -309,6 +317,14 @@ class AIAvatarWebSocketServer(Adapter):
 
         elif request.type == "data":
             audio_data = base64.b64decode(request.audio_data)
+            if self.pre_vad_audio_processor:
+                audio_data = self.pre_vad_audio_processor.process(
+                    audio_data,
+                    sample_rate=self.sts.vad.sample_rate,
+                    session_id=request.session_id,
+                )
+                if not audio_data:
+                    return
             await self.sts.vad.process_samples(audio_data, request.session_id)
 
         elif request.type == "config":
@@ -565,6 +581,8 @@ class AIAvatarWebSocketServer(Adapter):
                         await self._on_disconnect(session_data)
 
                     await self.sts.finalize(session_data.id)
+                    if self.pre_vad_audio_processor:
+                        self.pre_vad_audio_processor.reset_session(session_data.id)
                     if session_data.id in self.websockets:
                         del self.websockets[session_data.id]
                     if session_data.id in self.sessions:

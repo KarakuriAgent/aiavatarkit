@@ -90,6 +90,12 @@ class Settings:
     vad_segment_silence_threshold: float
     vad_use_iterator: bool
 
+    pre_vad_noise_suppression_enabled: bool
+    pre_vad_noise_suppression_provider: str
+    pre_vad_noise_suppression_level: int
+    pre_vad_auto_gain_dbfs: int
+    pre_vad_noise_suppression_fail_open: bool
+
     audio_enhancement_enabled: bool
     audio_enhancement_provider: str
     audio_enhancement_command: str
@@ -230,6 +236,14 @@ def load_settings(env_path: Path | None = None) -> Settings:
         vad_timeout=float(os.environ.get("VAD_TIMEOUT", "5")),
         vad_segment_silence_threshold=float(os.environ.get("VAD_SEGMENT_SILENCE_THRESHOLD", "0.05")),
         vad_use_iterator=bool_env("VAD_USE_ITERATOR", True),
+        pre_vad_noise_suppression_enabled=bool_env("PRE_VAD_NOISE_SUPPRESSION_ENABLED", False),
+        pre_vad_noise_suppression_provider=os.environ.get(
+            "PRE_VAD_NOISE_SUPPRESSION_PROVIDER",
+            "webrtc_noise_gain",
+        ),
+        pre_vad_noise_suppression_level=int(os.environ.get("PRE_VAD_NOISE_SUPPRESSION_LEVEL", "2")),
+        pre_vad_auto_gain_dbfs=int(os.environ.get("PRE_VAD_AUTO_GAIN_DBFS", "0")),
+        pre_vad_noise_suppression_fail_open=bool_env("PRE_VAD_NOISE_SUPPRESSION_FAIL_OPEN", True),
         audio_enhancement_enabled=bool_env("AUDIO_ENHANCEMENT_ENABLED", False),
         audio_enhancement_provider=os.environ.get("AUDIO_ENHANCEMENT_PROVIDER", "deepfilternet"),
         audio_enhancement_command="/usr/local/bin/deep-filter",
