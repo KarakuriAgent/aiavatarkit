@@ -1,10 +1,12 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from server.discord_gateway import (
     DiscordGatewayClient,
+    DiscordFile,
     DiscordIdentityResolver,
     DiscordIntegration,
     DiscordProfile,
@@ -37,8 +39,8 @@ class FakeHTTPClient:
         self.get_urls.append((url, headers))
         return self.get_responses[url]
 
-    async def post(self, url, json=None, headers=None):
-        self.posts.append((url, json, headers))
+    async def post(self, url, json=None, headers=None, data=None, files=None):
+        self.posts.append((url, json, headers, data, files))
         return FakeResponse()
 
     async def aclose(self):
@@ -63,8 +65,8 @@ class RecordingWebhook:
     def __init__(self):
         self.posts = []
 
-    async def post(self, content, *, profile=None):
-        self.posts.append((content, profile))
+    async def post(self, content, *, profile=None, files=None):
+        self.posts.append((content, profile, files or []))
 
 
 class FakeGateway:
@@ -81,6 +83,14 @@ class FakeGateway:
         self.typing_calls += 1
 
 
+class FakeVoiceRecorder:
+    def __init__(self, voices=None):
+        self.voices = voices or {}
+
+    async def get_voice(self, audio_id):
+        return self.voices.get(audio_id)
+
+
 def make_settings(**overrides):
     values = {
         "discord_sync_user_id": "robo-kanon-stack-chan",
@@ -91,6 +101,18 @@ def make_settings(**overrides):
         "discord_api_message_prefix": "📢 ",
         "discord_typing_indicator_enabled": False,
         "discord_typing_indicator_interval": 8,
+        "debug_report_enabled": False,
+        "debug_report_input_audio": True,
+        "debug_report_output_audio": True,
+        "debug_report_filter_enabled": True,
+        "debug_report_filter_reasons": [
+            "audio_enhancement_failed",
+            "no_speech_recognized",
+            "addressing_rejected",
+            "validate_request_rejected",
+            "wakeword_rejected",
+        ],
+        "debug_report_filter_audio": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -174,8 +196,36 @@ async def test_discord_webhook_uses_profile_and_suppresses_mentions():
                 "avatar_url": "https://example.com/avatar.png",
             },
             None,
+            None,
+            None,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_discord_webhook_posts_file_with_payload_json():
+    fake_client = FakeHTTPClient()
+    webhook = DiscordWebhookClient(
+        webhook_url="https://discord.example/webhook",
+        http_client=fake_client,
+    )
+
+    await webhook.post(
+        "hello",
+        profile=DiscordProfile(username="Bot Name"),
+        files=[DiscordFile(filename="voice.wav", content=b"audio", content_type="audio/wav")],
+    )
+
+    url, json_body, headers, data, files = fake_client.posts[0]
+    assert url == "https://discord.example/webhook"
+    assert json_body is None
+    assert headers is None
+    assert json.loads(data["payload_json"]) == {
+        "content": "hello",
+        "allowed_mentions": {"parse": []},
+        "username": "Bot Name",
+    }
+    assert files == [("files[0]", ("voice.wav", b"audio", "audio/wav"))]
 
 
 @pytest.mark.asyncio
@@ -195,6 +245,8 @@ async def test_discord_gateway_triggers_typing_indicator():
             "https://discord.com/api/v10/channels/target/typing",
             None,
             {"Authorization": "Bot token"},
+            None,
+            None,
         )
     ]
 
@@ -228,6 +280,46 @@ async def test_discord_integration_prefixes_stackchan_voice_user_log():
     await asyncio.gather(*list(integration._background_tasks))
 
     assert webhook.posts[0][0] == "🎙️ こんにちは"
+
+
+@pytest.mark.asyncio
+async def test_discord_debug_input_audio_attaches_to_user_log():
+    adapter = FakeAdapter()
+    adapter.sts = SimpleNamespace(voice_recorder=FakeVoiceRecorder({
+        "tx_debug_request": b"RIFF....WAVEaudio",
+    }))
+    webhook = RecordingWebhook()
+    integration = DiscordIntegration(
+        adapter=adapter,
+        settings=make_settings(debug_report_enabled=True),
+        resolver=FakeResolver(),
+        webhook=webhook,
+        gateway=FakeGateway(),
+    )
+    integration.register_response_hooks()
+
+    await adapter.response_handlers[0](
+        SimpleNamespace(
+            user_id="robo-kanon-stack-chan",
+            type="start",
+            metadata={
+                "recognized_text": "こんにちは",
+                "input_type": "audio",
+                "debug_request_audio": {
+                    "id": "tx_debug_request",
+                    "format": "wav",
+                    "filename": "input.wav",
+                },
+            },
+        ),
+        None,
+    )
+    await asyncio.gather(*list(integration._background_tasks))
+
+    content, _profile, files = webhook.posts[0]
+    assert content == "🎙️ こんにちは"
+    assert files[0].filename == "input.wav"
+    assert files[0].content == b"RIFF....WAVEaudio"
 
 
 @pytest.mark.asyncio
@@ -354,6 +446,47 @@ async def test_discord_integration_prefixes_stackchan_ai_response_log():
 
 
 @pytest.mark.asyncio
+async def test_discord_debug_output_audio_attaches_to_final_response_log():
+    adapter = FakeAdapter()
+    webhook = RecordingWebhook()
+    integration = DiscordIntegration(
+        adapter=adapter,
+        settings=make_settings(debug_report_enabled=True),
+        resolver=FakeResolver(),
+        webhook=webhook,
+        gateway=FakeGateway(),
+    )
+    integration.register_response_hooks()
+
+    await adapter.response_handlers[1](
+        SimpleNamespace(
+            user_id="robo-kanon-stack-chan",
+            type="chunk",
+            metadata={},
+            voice_text="どうしましたか？",
+            text="どうしましたか？",
+        ),
+        SimpleNamespace(transaction_id="tx-output", audio_data=b"audio"),
+    )
+    await adapter.response_handlers[1](
+        SimpleNamespace(
+            user_id="robo-kanon-stack-chan",
+            type="final",
+            metadata={},
+            voice_text="どうしましたか？",
+            text="どうしましたか？",
+        ),
+        SimpleNamespace(transaction_id="tx-output"),
+    )
+    await asyncio.gather(*list(integration._background_tasks))
+
+    content, _profile, files = webhook.posts[0]
+    assert content == "🎙️ どうしましたか？"
+    assert files[0].filename == "debug_output_tx-output_0.wav"
+    assert files[0].content == b"audio"
+
+
+@pytest.mark.asyncio
 async def test_discord_integration_prefixes_avatar_speak_ai_response_log_with_api_prefix():
     adapter = FakeAdapter()
     webhook = RecordingWebhook()
@@ -460,6 +593,58 @@ async def test_discord_integration_does_not_log_discord_source_ai_response():
     )
 
     assert webhook.posts == []
+
+
+@pytest.mark.asyncio
+async def test_discord_debug_filter_report_uses_japanese_label_and_details():
+    adapter = FakeAdapter()
+    adapter.sts = SimpleNamespace(voice_recorder=FakeVoiceRecorder({
+        "tx_debug_request": b"RIFF....WAVEaudio",
+    }))
+    webhook = RecordingWebhook()
+    integration = DiscordIntegration(
+        adapter=adapter,
+        settings=make_settings(
+            debug_report_enabled=True,
+            debug_report_filter_reasons=["addressing_rejected"],
+        ),
+        resolver=FakeResolver(),
+        webhook=webhook,
+        gateway=FakeGateway(),
+    )
+    integration.register_response_hooks()
+
+    await adapter.response_handlers[1](
+        SimpleNamespace(
+            user_id="robo-kanon-stack-chan",
+            type="canceled",
+            metadata={
+                "filter_reason": "addressing_rejected",
+                "reason": "addressing_rejected",
+                "recognized_text": "ただいま",
+                "input_type": "audio",
+                "addressing": {
+                    "reason": "monologue",
+                    "confidence": 0.91,
+                    "explanation": "target name was not mentioned",
+                },
+                "debug_request_audio": {
+                    "id": "tx_debug_request",
+                    "format": "wav",
+                    "filename": "input.wav",
+                },
+            },
+        ),
+        None,
+    )
+
+    content, _profile, files = webhook.posts[0]
+    assert "種類: 宛先判定で除外" in content
+    assert "認識結果: ただいま" in content
+    assert "宛先判定reason: monologue" in content
+    assert "confidence: 0.910" in content
+    assert "explanation: target name was not mentioned" in content
+    assert files[0].filename == "input.wav"
 
 
 @pytest.mark.asyncio

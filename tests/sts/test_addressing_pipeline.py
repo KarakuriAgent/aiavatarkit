@@ -76,6 +76,7 @@ async def test_addressing_rejection_cancels_after_stt_before_llm(tmp_path):
     assert len(detector.calls) == 1
     assert detector.calls[0]["text"] == "ただいま"
     assert [response.type for response in responses] == ["canceled"]
+    assert responses[0].metadata["filter_reason"] == "addressing_rejected"
     assert responses[0].metadata["reason"] == "addressing_rejected"
     assert responses[0].metadata["addressing"]["reason"] == "monologue"
     assert handled == []
@@ -125,6 +126,83 @@ async def test_addressing_acceptance_continues_and_records_history_with_user_id(
     assert [item["role"] for item in histories] == ["user", "assistant"]
     assert histories[0]["content"] == "カノン、天気を教えて"
     assert histories[1]["content"] == "晴れです。"
+
+    await sts.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_wakeword_acceptance_skips_addressing_detection(tmp_path):
+    db_path = str(tmp_path / "wakeword_skips_addressing.db")
+    detector = FakeAddressingDetector(AddressingDecision(
+        accepted=False,
+        reason="not_addressed",
+        confidence=1.0,
+    ))
+    stt = CountingSpeechRecognizer("カノン、天気を教えて")
+    sts = STSPipeline(
+        vad=SpeechDetectorDummy(),
+        stt=stt,
+        llm=LLMServiceDummy(response_text="晴れです。", db_connection_str=db_path),
+        tts=SpeechSynthesizerDummy(),
+        addressing_detector=detector,
+        wakewords=["カノン"],
+        wakeword_timeout=10,
+        voice_recorder_enabled=False,
+        db_connection_str=db_path,
+    )
+
+    responses = [
+        response
+        async for response in sts.invoke(STSRequest(
+            session_id="wakeword-skips-addressing",
+            user_id="user01",
+            audio_data=b"\x00\x00" * 16000,
+            audio_duration=1.5,
+        ))
+    ]
+
+    assert stt.calls == 1
+    assert detector.calls == []
+    assert any(response.type == "final" for response in responses)
+    start = next(response for response in responses if response.type == "start")
+    assert start.metadata["wakeword"]["accepted"] is True
+    assert start.metadata["wakeword"]["reason"] == "matched"
+    assert start.metadata["addressing"] == {
+        "skipped": True,
+        "reason": "wakeword_accepted",
+    }
+
+    await sts.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_wakeword_rejection_cancels_when_addressing_is_disabled(tmp_path):
+    db_path = str(tmp_path / "wakeword_reject.db")
+    sts = STSPipeline(
+        vad=SpeechDetectorDummy(),
+        stt=CountingSpeechRecognizer("ただいま"),
+        llm=LLMServiceDummy(response_text="ok", db_connection_str=db_path),
+        tts=SpeechSynthesizerDummy(),
+        wakewords=["カノン"],
+        wakeword_timeout=10,
+        voice_recorder_enabled=False,
+        db_connection_str=db_path,
+    )
+
+    responses = [
+        response
+        async for response in sts.invoke(STSRequest(
+            session_id="wakeword-reject",
+            user_id="user01",
+            audio_data=b"\x00\x00" * 16000,
+            audio_duration=1.5,
+        ))
+    ]
+
+    assert [response.type for response in responses] == ["canceled"]
+    assert responses[0].metadata["filter_reason"] == "wakeword_rejected"
+    assert responses[0].metadata["reason"] == "wakeword_rejected"
+    assert responses[0].metadata["wakeword"]["reason"] == "not_detected"
 
     await sts.shutdown()
 

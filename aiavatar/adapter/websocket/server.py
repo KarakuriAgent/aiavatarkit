@@ -95,6 +95,7 @@ class AIAvatarWebSocketServer(Adapter):
         invoke_timeout: float = 60.0,
         use_invoke_queue: bool = False,
         skip_tts_channels: List[str] = None,
+        debug_report_enabled: bool = False,
 
         # WebSocket processing
         response_audio_chunk_size: int = 0, # 0 = Send whole audio data at once
@@ -156,6 +157,7 @@ class AIAvatarWebSocketServer(Adapter):
             use_invoke_queue=use_invoke_queue,
             insert_channel_tag=insert_channel_tag,
             skip_tts_channels=skip_tts_channels,
+            debug_report_enabled=debug_report_enabled,
             debug=debug
         )
 

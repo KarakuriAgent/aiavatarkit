@@ -81,9 +81,11 @@ class STSPipeline:
         use_invoke_queue: bool = False,
         insert_channel_tag: bool = False,
         skip_tts_channels: List[str] = None,
+        debug_report_enabled: bool = False,
         debug: bool = False
     ):
         self.debug = debug
+        self.debug_report_enabled = debug_report_enabled
         self.use_invoke_queue = use_invoke_queue
 
         # Channel
@@ -253,6 +255,7 @@ class STSPipeline:
             "invoke_queue_idle_timeout": self.invoke_queue_idle_timeout,
             "invoke_timeout": self.invoke_timeout,
             "use_invoke_queue": self.use_invoke_queue,
+            "debug_report_enabled": self.debug_report_enabled,
             "debug": self.debug,
         }
 
@@ -308,22 +311,71 @@ class STSPipeline:
         logger.info(f"Stop response: {session_id} / {context_id}")
 
     def is_awake(self, request: STSRequest, last_request_at: datetime) -> bool:
+        return self.get_wakeword_decision(request, last_request_at)["accepted"]
+
+    def get_wakeword_decision(self, request: STSRequest, last_request_at: datetime) -> dict:
         now = datetime.now(timezone.utc)
 
         if not self.wakewords:
-            # Always return True if no wakewords are registered
-            return True
+            return {
+                "enabled": False,
+                "accepted": True,
+                "reason": "not_configured",
+            }
 
         if self.wakeword_timeout > (now - last_request_at).total_seconds():
-            # Return True if not timeout
-            return True
+            return {
+                "enabled": True,
+                "accepted": True,
+                "reason": "within_timeout",
+                "timeout": self.wakeword_timeout,
+            }
 
+        text = request.text or ""
         for ww in self.wakewords:
-            if ww in request.text:
+            if ww in text:
                 logger.info(f"Wake by '{ww}': {request.text}")
-                return True
+                return {
+                    "enabled": True,
+                    "accepted": True,
+                    "reason": "matched",
+                    "matched_wakeword": ww,
+                }
 
-        return False
+        return {
+            "enabled": True,
+            "accepted": False,
+            "reason": "not_detected",
+        }
+
+    def _metadata_with_request(self, request: STSRequest, metadata: dict = None) -> dict:
+        return {
+            **(request.metadata or {}),
+            **(metadata or {}),
+        }
+
+    async def _save_debug_request_audio(self, transaction_id: str, audio_data: bytes) -> Optional[dict]:
+        if not self.debug_report_enabled or not audio_data:
+            return None
+        audio_id = f"{transaction_id}_debug_request"
+        voice_bytes = audio_data
+        if not voice_bytes.startswith(b"RIFF"):
+            voice_bytes = self.voice_recorder.create_wav_header(
+                data_size=len(voice_bytes),
+                sample_rate=self._request_audio_sample_rate(),
+                channels=getattr(self.voice_recorder, "channels", 1),
+                sample_width=getattr(self.voice_recorder, "sample_width", 2),
+            ) + voice_bytes
+        try:
+            await self.voice_recorder.save_voice(audio_id, voice_bytes, "wav")
+        except Exception as ex:
+            logger.warning("Failed to save debug request audio: %s", ex, exc_info=self.debug)
+            return None
+        return {
+            "id": audio_id,
+            "format": "wav",
+            "filename": f"{audio_id}.wav",
+        }
 
     def _is_addressing_detection_required(self, request: STSRequest) -> bool:
         if not self.addressing_detector:
@@ -398,6 +450,10 @@ class STSPipeline:
             transaction_id = str(uuid4())
             suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
             audio_sample_rate = self._request_audio_sample_rate()
+            debug_request_audio = await self._save_debug_request_audio(transaction_id, request.audio_data)
+            if debug_request_audio:
+                request.metadata = request.metadata or {}
+                request.metadata["debug_request_audio"] = debug_request_audio
 
             if self.audio_enhancer and request.audio_data:
                 request.metadata = request.metadata or {}
@@ -440,10 +496,11 @@ class STSPipeline:
                             session_id=request.session_id,
                             user_id=request.user_id,
                             context_id=request.context_id,
-                            metadata={
+                            metadata=self._metadata_with_request(request, {
+                                "filter_reason": "audio_enhancement_failed",
                                 "reason": "audio_enhancement_failed",
                                 "audio_enhancement": request.metadata["audio_enhancement"],
-                            },
+                            }),
                         )
                         return
 
@@ -461,6 +518,7 @@ class STSPipeline:
 
                 if voice_auth_result is None or not voice_auth_result.accepted:
                     metadata = {
+                        "filter_reason": "voice_auth_rejected",
                         "reason": "voice_auth_rejected",
                         "voice_auth": voice_auth_result.to_dict() if voice_auth_result else {
                             "accepted": False,
@@ -486,7 +544,7 @@ class STSPipeline:
                         session_id=request.session_id,
                         user_id=request.user_id,
                         context_id=request.context_id,
-                        metadata=metadata,
+                        metadata=self._metadata_with_request(request, metadata),
                     )
                     return
 
@@ -523,7 +581,11 @@ class STSPipeline:
                         session_id=request.session_id,
                         user_id=request.user_id,
                         context_id=request.context_id,
-                        metadata={"reason": "No speech recognized."}
+                        metadata=self._metadata_with_request(request, {
+                            "filter_reason": "no_speech_recognized",
+                            "reason": "No speech recognized.",
+                            "input_type": input_type,
+                        })
                     )
                     return
                 if self.debug:
@@ -539,7 +601,52 @@ class STSPipeline:
             else:
                 request.text = recognized_text
 
-            if self._is_addressing_detection_required(request):
+            # Get session state before gates that need conversation recency.
+            state = await self.session_state_manager.get_session_state(request.session_id)
+            now = datetime.now(timezone.utc)
+            last_created_at = await self.llm.context_manager.get_last_created_at(request.context_id)
+
+            wakeword_decision = self.get_wakeword_decision(request, last_created_at)
+            if wakeword_decision["enabled"]:
+                request.metadata = request.metadata or {}
+                request.metadata["wakeword"] = wakeword_decision
+                if self.debug:
+                    logger.info(
+                        "Wakeword decision: accepted=%s reason=%s text=%s",
+                        wakeword_decision.get("accepted"),
+                        wakeword_decision.get("reason"),
+                        recognized_text,
+                    )
+
+            skip_addressing_by_wakeword = wakeword_decision["enabled"] and wakeword_decision["accepted"]
+            addressing_required = self._is_addressing_detection_required(request)
+
+            if not wakeword_decision["accepted"] and not addressing_required:
+                yield STSResponse(
+                    type="canceled",
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    context_id=request.context_id,
+                    metadata=self._metadata_with_request(request, {
+                        "filter_reason": "wakeword_rejected",
+                        "reason": "wakeword_rejected",
+                        "wakeword": wakeword_decision,
+                        "recognized_text": recognized_text,
+                        "input_type": input_type,
+                    }),
+                )
+                return
+
+            if addressing_required and skip_addressing_by_wakeword:
+                request.metadata = request.metadata or {}
+                request.metadata["addressing"] = {
+                    "skipped": True,
+                    "reason": "wakeword_accepted",
+                }
+                if self.debug:
+                    logger.info("Addressing skipped by wakeword: text=%s", recognized_text)
+
+            if addressing_required and not skip_addressing_by_wakeword:
                 recent_history, seconds_since_last_assistant_turn = await self._get_addressing_context(request.user_id)
                 addressing_decision = await self.addressing_detector.detect(
                     text=recognized_text,
@@ -563,12 +670,13 @@ class STSPipeline:
                         session_id=request.session_id,
                         user_id=request.user_id,
                         context_id=request.context_id,
-                        metadata={
+                        metadata=self._metadata_with_request(request, {
+                            "filter_reason": "addressing_rejected",
                             "reason": "addressing_rejected",
                             "addressing": addressing_decision.to_dict(),
                             "recognized_text": recognized_text,
                             "input_type": input_type,
-                        },
+                        }),
                     )
                     return
 
@@ -581,7 +689,12 @@ class STSPipeline:
                         session_id=request.session_id,
                         user_id=request.user_id,
                         context_id=request.context_id,
-                        metadata={"reason": reason}
+                        metadata=self._metadata_with_request(request, {
+                            "filter_reason": "validate_request_rejected",
+                            "reason": reason,
+                            "recognized_text": recognized_text,
+                            "input_type": input_type,
+                        })
                     )
                     return
 
@@ -589,10 +702,6 @@ class STSPipeline:
             performance.request_files = json.dumps(request.files or [], ensure_ascii=False)
             performance.voice_length = request.audio_duration
             performance.stt_time = time() - start_time
-
-            # Get session state
-            state = await self.session_state_manager.get_session_state(request.session_id)
-            now = datetime.now(timezone.utc)
 
             # Merge consecutive requests
             if self.merge_request_threshold > 0 and request.allow_merge:
@@ -607,40 +716,33 @@ class STSPipeline:
                     request.session_id, now, request.text, request.files
                 )
 
-            last_created_at = await self.llm.context_manager.get_last_created_at(request.context_id)
-            is_awake = self.is_awake(request, last_created_at)
-            if is_awake:
-                # Get context
-                if request.context_id:
-                    if last_created_at == datetime.min.replace(tzinfo=timezone.utc):
-                        logger.info(f"Invalid context_id: {request.context_id}")
-                        request.context_id = None
+            # Get context
+            if request.context_id:
+                if last_created_at == datetime.min.replace(tzinfo=timezone.utc):
+                    logger.info(f"Invalid context_id: {request.context_id}")
+                    request.context_id = None
 
-                if not request.context_id:
-                    request.context_id = str(uuid4())
-                    logger.info(f"Create new context_id: {request.context_id}")
+            if not request.context_id:
+                request.context_id = str(uuid4())
+                logger.info(f"Create new context_id: {request.context_id}")
 
-                # Insert timestamp
-                if self.timestamp_interval_seconds > 0 and (now - state.timestamp_inserted_at).total_seconds() > self.timestamp_interval_seconds:
-                    now_str = datetime.now(ZoneInfo(self.timestamp_timezone)).strftime("%Y/%m/%d %H:%M:%S")
-                    request.text = f"{self.timestamp_prefix}{now_str}\n\n{request.text}"
-                    timestamp_inserted_at = now
-                else:
-                    timestamp_inserted_at = state.timestamp_inserted_at
-
-                # Overwrite active transaction
-                if self.debug:
-                    logger.info(f"Start transaction: {transaction_id} {request.text} (previous: {state.active_transaction_id})")
-                await self.session_state_manager.update_transaction(request.session_id, transaction_id, timestamp_inserted_at)
+            # Insert timestamp
+            if self.timestamp_interval_seconds > 0 and (now - state.timestamp_inserted_at).total_seconds() > self.timestamp_interval_seconds:
+                now_str = datetime.now(ZoneInfo(self.timestamp_timezone)).strftime("%Y/%m/%d %H:%M:%S")
+                request.text = f"{self.timestamp_prefix}{now_str}\n\n{request.text}"
+                timestamp_inserted_at = now
             else:
-                # Clear request content to avoid LLM and TTS processing
-                request.text = None
-                request.files = {}
+                timestamp_inserted_at = state.timestamp_inserted_at
+
+            # Overwrite active transaction
+            if self.debug:
+                logger.info(f"Start transaction: {transaction_id} {request.text} (previous: {state.active_transaction_id})")
+            await self.session_state_manager.update_transaction(request.session_id, transaction_id, timestamp_inserted_at)
 
             performance.context_id = request.context_id
 
             # Notify client that request is accepted only after request gates pass.
-            if is_awake and not suppress_adapter_response:
+            if not suppress_adapter_response:
                 asyncio.create_task(self.handle_response(STSResponse(
                     type="accepted",
                     session_id=request.session_id,
@@ -658,7 +760,7 @@ class STSPipeline:
                     await handler(request)
 
             # Stop on-going response before new response
-            if is_awake and not suppress_adapter_response and (not self.use_invoke_queue or not request.wait_in_queue):
+            if not suppress_adapter_response and (not self.use_invoke_queue or not request.wait_in_queue):
                 await self.stop_response(request.session_id, request.context_id)
             performance.stop_response_time = time() - start_time
 

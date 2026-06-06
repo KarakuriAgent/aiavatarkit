@@ -1,9 +1,11 @@
 import asyncio
+import io
 import json
 import logging
 import platform
 import re
 import time
+import wave
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
@@ -28,6 +30,13 @@ DISCORD_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 class DiscordProfile:
     username: str
     avatar_url: Optional[str] = None
+
+
+@dataclass
+class DiscordFile:
+    filename: str
+    content: bytes
+    content_type: str = "application/octet-stream"
 
 
 def remove_control_tags(text: Optional[str]) -> str:
@@ -142,8 +151,12 @@ class DiscordWebhookClient:
         if self._owns_http_client:
             await self.http_client.aclose()
 
-    async def post(self, content: str, *, profile: DiscordProfile = None):
-        for chunk in split_discord_content(content):
+    async def post(self, content: str, *, profile: DiscordProfile = None, files: list[DiscordFile] = None):
+        files = [f for f in (files or []) if f and f.content]
+        chunks = split_discord_content(content)
+        if not chunks and files:
+            chunks = [""]
+        for idx, chunk in enumerate(chunks):
             payload = {
                 "content": chunk,
                 "allowed_mentions": {"parse": []},
@@ -154,7 +167,17 @@ class DiscordWebhookClient:
                     payload["avatar_url"] = profile.avatar_url
 
             try:
-                resp = await self.http_client.post(self.webhook_url, json=payload)
+                if files and idx == 0:
+                    resp = await self.http_client.post(
+                        self.webhook_url,
+                        data={"payload_json": json.dumps(payload, ensure_ascii=False)},
+                        files=[
+                            (f"files[{file_idx}]", (file.filename, file.content, file.content_type))
+                            for file_idx, file in enumerate(files)
+                        ],
+                    )
+                else:
+                    resp = await self.http_client.post(self.webhook_url, json=payload)
                 resp.raise_for_status()
             except Exception as ex:
                 logger.warning("Failed to post Discord webhook message: %s", ex)
@@ -176,6 +199,120 @@ def split_discord_content(content: str, *, limit: int = 2000) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+DEBUG_FILTER_LABELS = {
+    "audio_enhancement_failed": "音声補正で除外",
+    "voice_auth_rejected": "話者認証で除外",
+    "no_speech_recognized": "音声認識結果なし",
+    "addressing_rejected": "宛先判定で除外",
+    "validate_request_rejected": "リクエスト検証で除外",
+    "wakeword_rejected": "ウェイクワード未検出",
+}
+
+
+def _canonical_filter_reason(metadata: dict) -> Optional[str]:
+    reason = metadata.get("filter_reason") or metadata.get("reason")
+    if reason == "No speech recognized.":
+        return "no_speech_recognized"
+    if reason in DEBUG_FILTER_LABELS:
+        return reason
+    return metadata.get("filter_reason")
+
+
+def _compact_value(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def _append_detail(lines: list[str], label: str, value):
+    compact = _compact_value(value)
+    if compact is not None:
+        lines.append(f"{label}: {compact}")
+
+
+def _is_wav(data: bytes) -> bool:
+    return bool(data and data.startswith(b"RIFF") and data[8:12] == b"WAVE")
+
+
+def _audio_file_extension(data: bytes, fallback: str = "wav") -> str:
+    if _is_wav(data):
+        return "wav"
+    if data.startswith(b"OggS"):
+        return "ogg"
+    if data.startswith(b"ID3") or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "mp3"
+    return fallback
+
+
+def _audio_content_type(extension: str) -> str:
+    return {
+        "wav": "audio/wav",
+        "ogg": "audio/ogg",
+        "mp3": "audio/mpeg",
+    }.get(extension, "application/octet-stream")
+
+
+def _merge_wav_chunks(chunks: list[bytes]) -> Optional[bytes]:
+    if not chunks or not all(_is_wav(chunk) for chunk in chunks):
+        return None
+
+    params = None
+    frames = []
+    try:
+        for chunk in chunks:
+            with wave.open(io.BytesIO(chunk), "rb") as wav_file:
+                current_params = (
+                    wav_file.getnchannels(),
+                    wav_file.getsampwidth(),
+                    wav_file.getframerate(),
+                    wav_file.getcomptype(),
+                    wav_file.getcompname(),
+                )
+                if params is None:
+                    params = current_params
+                elif params != current_params:
+                    return None
+                frames.append(wav_file.readframes(wav_file.getnframes()))
+
+        out = io.BytesIO()
+        with wave.open(out, "wb") as wav_file:
+            channels, sample_width, frame_rate, comp_type, comp_name = params
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(sample_width)
+            wav_file.setframerate(frame_rate)
+            wav_file.setcomptype(comp_type, comp_name)
+            wav_file.writeframes(b"".join(frames))
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _build_audio_files(prefix: str, chunks: list[bytes], *, max_files: int = 10) -> list[DiscordFile]:
+    chunks = [chunk for chunk in chunks if chunk]
+    if not chunks:
+        return []
+
+    merged = _merge_wav_chunks(chunks)
+    if merged:
+        return [DiscordFile(
+            filename=f"{prefix}.wav",
+            content=merged,
+            content_type="audio/wav",
+        )]
+
+    files = []
+    for idx, chunk in enumerate(chunks[:max_files]):
+        ext = _audio_file_extension(chunk)
+        files.append(DiscordFile(
+            filename=f"{prefix}_{idx}.{ext}",
+            content=chunk,
+            content_type=_audio_content_type(ext),
+        ))
+    return files
 
 
 class DiscordGatewayClient:
@@ -331,6 +468,7 @@ class DiscordIntegration:
         self.gateway = gateway
         self._background_tasks: set[asyncio.Task] = set()
         self._stackchan_typing_tasks: dict[str, tuple[asyncio.Event, asyncio.Task]] = {}
+        self._response_audio_chunks: dict[str, list[bytes]] = {}
 
     def register_response_hooks(self):
         @self.adapter.on_response
@@ -349,7 +487,10 @@ class DiscordIntegration:
             if not text:
                 return
             text = f"{self.settings.discord_voice_message_prefix}{text}"
-            self._schedule(self._post_as(self.settings.discord_user_id, text, fallback_name="User"))
+            files = []
+            if self._debug_report_enabled() and self.settings.debug_report_input_audio:
+                files = await self._debug_request_audio_files(response)
+            self._schedule(self._post_as(self.settings.discord_user_id, text, fallback_name="User", files=files))
 
         @self.adapter.on_response
         async def post_ai_response(response, _sts_response):
@@ -358,15 +499,23 @@ class DiscordIntegration:
             metadata = response.metadata or {}
             if metadata.get("source") == "discord":
                 return
+            self._collect_debug_response_audio(response, _sts_response)
             if response.type in ("final", "canceled"):
                 await self._stop_stackchan_typing(response)
+            if response.type == "canceled":
+                await self._post_debug_filter_report(response)
+                self._response_audio_chunks.pop(self._response_audio_key(response, _sts_response), None)
+                return
             if response.type != "final":
                 return
             text = response.voice_text or remove_control_tags(response.text)
             if not text:
                 return
             text = f"{self._ai_response_prefix(metadata)}{text}"
-            self._schedule(self._post_as(self.settings.discord_bot_id, text, fallback_name="Bot"))
+            files = []
+            if self._debug_report_enabled() and self.settings.debug_report_output_audio:
+                files = self._debug_response_audio_files(response, _sts_response)
+            self._schedule(self._post_as(self.settings.discord_bot_id, text, fallback_name="Bot", files=files))
 
     def _ai_response_prefix(self, metadata: dict) -> str:
         if metadata.get("source") == "avatar_speak" or metadata.get("speak_text") is not None:
@@ -378,9 +527,120 @@ class DiscordIntegration:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _post_as(self, discord_user_id: str, text: str, *, fallback_name: str):
+    async def _post_as(self, discord_user_id: str, text: str, *, fallback_name: str, files: list[DiscordFile] = None):
         profile = await self.resolver.resolve(discord_user_id, fallback_name=fallback_name)
-        await self.webhook.post(text, profile=profile)
+        await self.webhook.post(text, profile=profile, files=files)
+
+    def _debug_report_enabled(self) -> bool:
+        return bool(getattr(self.settings, "debug_report_enabled", False))
+
+    def _response_audio_key(self, response, sts_response=None) -> str:
+        return (
+            getattr(sts_response, "transaction_id", None)
+            or getattr(response, "transaction_id", None)
+            or getattr(response, "context_id", None)
+            or getattr(response, "session_id", None)
+            or self.settings.discord_sync_user_id
+        )
+
+    def _collect_debug_response_audio(self, response, sts_response=None):
+        if not self._debug_report_enabled() or not self.settings.debug_report_output_audio:
+            return
+        if response.type != "chunk":
+            return
+        audio_data = getattr(sts_response, "audio_data", None)
+        if not audio_data:
+            audio_data = getattr(response, "audio_data", None)
+        if not isinstance(audio_data, bytes) or not audio_data:
+            return
+        key = self._response_audio_key(response, sts_response)
+        self._response_audio_chunks.setdefault(key, []).append(audio_data)
+
+    def _debug_response_audio_files(self, response, sts_response=None) -> list[DiscordFile]:
+        key = self._response_audio_key(response, sts_response)
+        chunks = self._response_audio_chunks.pop(key, [])
+        return _build_audio_files(f"debug_output_{key}", chunks)
+
+    async def _debug_request_audio_files(self, response) -> list[DiscordFile]:
+        metadata = response.metadata or {}
+        audio_info = metadata.get("debug_request_audio") or {}
+        audio_id = audio_info.get("id")
+        if not audio_id:
+            return []
+        recorder = getattr(getattr(self.adapter, "sts", None), "voice_recorder", None)
+        if not recorder:
+            return []
+        try:
+            data = await recorder.get_voice(audio_id)
+        except Exception as ex:
+            logger.warning("Failed to read debug request audio: %s", ex)
+            return []
+        if not data:
+            return []
+        ext = audio_info.get("format") or _audio_file_extension(data)
+        return [DiscordFile(
+            filename=audio_info.get("filename") or f"{audio_id}.{ext}",
+            content=data,
+            content_type=_audio_content_type(ext),
+        )]
+
+    def _should_report_filter(self, metadata: dict) -> bool:
+        if not self._debug_report_enabled() or not self.settings.debug_report_filter_enabled:
+            return False
+        reason = _canonical_filter_reason(metadata)
+        if not reason:
+            return False
+        configured = set(self.settings.debug_report_filter_reasons or [])
+        return "*" in configured or reason in configured
+
+    def _format_filter_report(self, metadata: dict) -> str:
+        reason = _canonical_filter_reason(metadata) or "unknown"
+        label = DEBUG_FILTER_LABELS.get(reason, reason)
+        lines = [
+            "[デバッグ] 応答を生成しませんでした",
+            f"種類: {label}",
+        ]
+        _append_detail(lines, "認識結果", metadata.get("recognized_text") or metadata.get("request_text"))
+        _append_detail(lines, "入力種別", metadata.get("input_type"))
+        detail_reason = metadata.get("reason")
+        if detail_reason and detail_reason != reason:
+            _append_detail(lines, "詳細理由", detail_reason)
+
+        audio_enhancement = metadata.get("audio_enhancement") or {}
+        _append_detail(lines, "音声補正provider", audio_enhancement.get("provider"))
+        _append_detail(lines, "音声補正error", audio_enhancement.get("error"))
+        _append_detail(lines, "音声補正fail_open", audio_enhancement.get("fail_open"))
+
+        voice_auth = metadata.get("voice_auth") or {}
+        _append_detail(lines, "話者認証reason", voice_auth.get("reason"))
+        _append_detail(lines, "request_user_id", voice_auth.get("request_user_id"))
+        _append_detail(lines, "matched_voice_user_id", voice_auth.get("matched_voice_user_id"))
+        _append_detail(lines, "similarity", voice_auth.get("similarity"))
+        _append_detail(lines, "threshold", voice_auth.get("threshold"))
+
+        addressing = metadata.get("addressing") or {}
+        _append_detail(lines, "宛先判定reason", addressing.get("reason"))
+        _append_detail(lines, "confidence", addressing.get("confidence"))
+        _append_detail(lines, "explanation", addressing.get("explanation"))
+
+        wakeword = metadata.get("wakeword") or {}
+        _append_detail(lines, "ウェイクワードreason", wakeword.get("reason"))
+        _append_detail(lines, "matched_wakeword", wakeword.get("matched_wakeword"))
+        return "\n".join(lines)
+
+    async def _post_debug_filter_report(self, response):
+        metadata = response.metadata or {}
+        if not self._should_report_filter(metadata):
+            return
+        files = []
+        if self.settings.debug_report_filter_audio:
+            files = await self._debug_request_audio_files(response)
+        await self._post_as(
+            self.settings.discord_bot_id,
+            self._format_filter_report(metadata),
+            fallback_name="Bot",
+            files=files,
+        )
 
     async def _refresh_typing_indicator(self, stop_event: asyncio.Event):
         while not stop_event.is_set():

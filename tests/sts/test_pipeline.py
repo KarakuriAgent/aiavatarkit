@@ -987,6 +987,7 @@ async def test_validate_request_cancel():
     # Should have a canceled response
     canceled_responses = [r for r in responses if r.type == "canceled"]
     assert len(canceled_responses) == 1
+    assert canceled_responses[0].metadata["filter_reason"] == "validate_request_rejected"
     assert canceled_responses[0].metadata["reason"] == "Text too short"
 
     # Should not have final response (LLM was not called)
@@ -1076,6 +1077,7 @@ async def test_validate_request_with_files():
     # Should be canceled
     canceled_responses = [r for r in responses if r.type == "canceled"]
     assert len(canceled_responses) == 1
+    assert canceled_responses[0].metadata["filter_reason"] == "validate_request_rejected"
     assert canceled_responses[0].metadata["reason"] == "Too many files"
 
     await sts.shutdown()

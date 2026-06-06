@@ -160,6 +160,12 @@ class Settings:
     skip_tts_channels: List[str]
     response_audio_chunk_size: int | None
     debug: bool
+    debug_report_enabled: bool
+    debug_report_input_audio: bool
+    debug_report_output_audio: bool
+    debug_report_filter_enabled: bool
+    debug_report_filter_reasons: List[str]
+    debug_report_filter_audio: bool
 
     discord_sync_enabled: bool
     discord_bot_token: str | None
@@ -288,6 +294,18 @@ def load_settings(env_path: Path | None = None) -> Settings:
         skip_tts_channels=list_env("SKIP_TTS_CHANNELS", ["discord"]),
         response_audio_chunk_size=int(os.environ.get("RESPONSE_AUDIO_CHUNK_SIZE", "8192")),
         debug=bool_env("DEBUG", True),
+        debug_report_enabled=bool_env("DEBUG_REPORT_ENABLED", False),
+        debug_report_input_audio=bool_env("DEBUG_REPORT_INPUT_AUDIO", True),
+        debug_report_output_audio=bool_env("DEBUG_REPORT_OUTPUT_AUDIO", True),
+        debug_report_filter_enabled=bool_env("DEBUG_REPORT_FILTER_ENABLED", True),
+        debug_report_filter_reasons=list_env("DEBUG_REPORT_FILTER_REASONS", [
+            "audio_enhancement_failed",
+            "no_speech_recognized",
+            "addressing_rejected",
+            "validate_request_rejected",
+            "wakeword_rejected",
+        ]),
+        debug_report_filter_audio=bool_env("DEBUG_REPORT_FILTER_AUDIO", True),
         discord_sync_enabled=bool_env("DISCORD_SYNC_ENABLED", False),
         discord_bot_token=optional_env("DISCORD_BOT_TOKEN"),
         discord_channel_id=optional_env("DISCORD_CHANNEL_ID"),
