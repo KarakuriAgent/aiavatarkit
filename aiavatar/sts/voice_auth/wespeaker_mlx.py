@@ -138,6 +138,8 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
         audio_bytes: bytes,
         sample_rate: int,
         audio_duration: Optional[float] = None,
+        threshold: Optional[float] = None,
+        min_duration: Optional[float] = None,
     ) -> VoiceAuthResult:
         try:
             return self._verify_sync(
@@ -145,6 +147,8 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
                 audio_bytes=audio_bytes,
                 sample_rate=sample_rate,
                 audio_duration=audio_duration,
+                threshold=threshold,
+                min_duration=min_duration,
             )
         except Exception as ex:
             logger.warning("Voice authentication failed internally: %s", ex, exc_info=self.debug)
@@ -169,51 +173,57 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
         audio_bytes: bytes,
         sample_rate: int,
         audio_duration: Optional[float] = None,
+        threshold: Optional[float] = None,
+        min_duration: Optional[float] = None,
     ) -> VoiceAuthResult:
+        effective_threshold = self.threshold if threshold is None else float(threshold)
+        effective_min_duration = self.min_duration if min_duration is None else float(min_duration)
+
         if not audio_bytes:
-            return VoiceAuthResult(False, user_id=user_id, threshold=self.threshold, reason="empty_audio")
+            return VoiceAuthResult(False, user_id=user_id, threshold=effective_threshold, reason="empty_audio")
 
         duration = audio_duration
         if duration is None and sample_rate > 0:
             duration = (len(audio_bytes) / 2) / sample_rate
-        if duration is not None and duration < self.min_duration:
+        if duration is not None and duration < effective_min_duration:
             return VoiceAuthResult(
                 False,
                 user_id=user_id,
-                threshold=self.threshold,
+                threshold=effective_threshold,
                 reason="audio_too_short",
-                metadata={"duration": duration, "min_duration": self.min_duration},
+                metadata={"duration": duration, "min_duration": effective_min_duration},
             )
 
         if self.require_user_id and not user_id and not self.allow_identification:
-            return VoiceAuthResult(False, threshold=self.threshold, reason="missing_user_id")
+            return VoiceAuthResult(False, threshold=effective_threshold, reason="missing_user_id")
 
         emb = self.embed_pcm(audio_bytes=audio_bytes, sample_rate=sample_rate)
 
         if self.allow_identification:
-            return self._identify(user_id=user_id, emb=emb)
+            return self._identify(user_id=user_id, emb=emb, threshold=effective_threshold)
 
         if user_id and user_id in self._profiles:
-            return self._verify_claimed(user_id=user_id, emb=emb)
+            return self._verify_claimed(user_id=user_id, emb=emb, threshold=effective_threshold)
 
         if user_id and user_id not in self._profiles:
-            return VoiceAuthResult(False, user_id=user_id, threshold=self.threshold, reason="profile_not_found")
+            return VoiceAuthResult(False, user_id=user_id, threshold=effective_threshold, reason="profile_not_found")
 
         if self.require_user_id:
-            return VoiceAuthResult(False, threshold=self.threshold, reason="missing_user_id")
+            return VoiceAuthResult(False, threshold=effective_threshold, reason="missing_user_id")
 
-        return self._identify(user_id=user_id, emb=emb)
+        return self._identify(user_id=user_id, emb=emb, threshold=effective_threshold)
 
-    def _verify_claimed(self, *, user_id: str, emb: np.ndarray) -> VoiceAuthResult:
+    def _verify_claimed(self, *, user_id: str, emb: np.ndarray, threshold: Optional[float] = None) -> VoiceAuthResult:
+        effective_threshold = self.threshold if threshold is None else float(threshold)
         target = self._profiles[user_id]
         sim = self._cosine(target, emb)
-        if sim < self.threshold:
+        if sim < effective_threshold:
             return VoiceAuthResult(
                 accepted=False,
                 user_id=user_id,
                 matched_user_id=user_id,
                 similarity=sim,
-                threshold=self.threshold,
+                threshold=effective_threshold,
                 reason="below_threshold",
             )
         if self.allowed_users and user_id not in self.allowed_users:
@@ -222,7 +232,7 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
                 user_id=user_id,
                 matched_user_id=user_id,
                 similarity=sim,
-                threshold=self.threshold,
+                threshold=effective_threshold,
                 reason="user_not_allowed",
             )
         return VoiceAuthResult(
@@ -230,25 +240,26 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
             user_id=user_id,
             matched_user_id=user_id,
             similarity=sim,
-            threshold=self.threshold,
+            threshold=effective_threshold,
             reason="matched",
         )
 
-    def _identify(self, *, user_id: Optional[str], emb: np.ndarray) -> VoiceAuthResult:
+    def _identify(self, *, user_id: Optional[str], emb: np.ndarray, threshold: Optional[float] = None) -> VoiceAuthResult:
+        effective_threshold = self.threshold if threshold is None else float(threshold)
         if not self._profiles:
-            return VoiceAuthResult(False, user_id=user_id, threshold=self.threshold, reason="no_profiles")
+            return VoiceAuthResult(False, user_id=user_id, threshold=effective_threshold, reason="no_profiles")
 
         matched_user_id, sim = max(
             ((profile_user_id, self._cosine(profile, emb)) for profile_user_id, profile in self._profiles.items()),
             key=lambda item: item[1],
         )
-        if sim < self.threshold:
+        if sim < effective_threshold:
             return VoiceAuthResult(
                 accepted=False,
                 user_id=user_id,
                 matched_user_id=matched_user_id,
                 similarity=sim,
-                threshold=self.threshold,
+                threshold=effective_threshold,
                 reason="below_threshold",
             )
         if self.allowed_users and matched_user_id not in self.allowed_users:
@@ -257,7 +268,7 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
                 user_id=user_id,
                 matched_user_id=matched_user_id,
                 similarity=sim,
-                threshold=self.threshold,
+                threshold=effective_threshold,
                 reason="user_not_allowed",
             )
         return VoiceAuthResult(
@@ -265,7 +276,7 @@ class WespeakerMlxVoiceAuthenticator(VoiceAuthenticator):
             user_id=user_id,
             matched_user_id=matched_user_id,
             similarity=sim,
-            threshold=self.threshold,
+            threshold=effective_threshold,
             reason="identified",
         )
 

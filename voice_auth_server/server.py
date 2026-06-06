@@ -31,6 +31,12 @@ class EnrollRequest(BaseModel):
     candidate_ids: List[str]
 
 
+class TestStartRequest(BaseModel):
+    user_id: str
+    threshold: float | None = None
+    min_duration: float | None = None
+
+
 class VoiceAuthEnrollmentServer:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -46,6 +52,25 @@ class VoiceAuthEnrollmentServer:
         @self.vad.on_speech_detected
         async def on_speech_detected(data: bytes, text: str, metadata: dict, recorded_duration: float, session_id: str):
             user_id = self.vad.get_session_data(session_id, "user_id")
+            test_result = await self.manager.add_test_result(
+                audio_bytes=data,
+                sample_rate=self.vad.sample_rate,
+                duration=recorded_duration,
+                session_id=session_id,
+            )
+            if test_result:
+                logger.info(
+                    "Voice auth test completed: user=%s accepted=%s matched=%s similarity=%s threshold=%s reason=%s duration=%.3f",
+                    test_result.user_id,
+                    test_result.accepted,
+                    test_result.matched_user_id,
+                    f"{test_result.similarity:.4f}" if test_result.similarity is not None else None,
+                    f"{test_result.threshold:.4f}" if test_result.threshold is not None else None,
+                    test_result.reason,
+                    recorded_duration,
+                )
+                return
+
             candidate = self.manager.add_candidate(
                 audio_bytes=data,
                 sample_rate=self.vad.sample_rate,
@@ -170,18 +195,44 @@ class VoiceAuthEnrollmentServer:
         async def list_candidates():
             return {"candidates": self.manager.list_candidates()}
 
+        @router.get("/api/profiles")
+        async def list_profiles():
+            try:
+                return await self.manager.list_profiles()
+            except ValueError as ex:
+                raise HTTPException(status_code=400, detail=str(ex))
+            except Exception as ex:
+                logger.warning("Voice auth profiles unavailable: %s", ex, exc_info=self.settings.debug)
+                return {
+                    "profiles": [],
+                    "allowed_users": [],
+                    "error": "voice_auth_unavailable",
+                    "detail": str(ex),
+                }
+
         @router.delete("/api/candidates")
         async def clear_candidates():
             self.manager.clear_candidates()
             return {"candidates": []}
 
         @router.get("/api/candidates/{candidate_id}/audio")
-        async def get_candidate_audio(candidate_id: str):
+        async def get_candidate_audio(candidate_id: str, variant: str = "enhanced"):
             try:
-                candidate = self.manager.get_candidate(candidate_id)
+                audio_path = await self.manager.get_candidate_audio_path(candidate_id, variant=variant)
             except KeyError:
                 raise HTTPException(status_code=404, detail="candidate not found")
-            return FileResponse(candidate.path, media_type="audio/wav")
+            except ValueError as ex:
+                raise HTTPException(status_code=400, detail=str(ex))
+            except Exception as ex:
+                logger.warning(
+                    "Candidate audio enhancement failed: candidate_id=%s variant=%s error=%s",
+                    candidate_id,
+                    variant,
+                    ex,
+                    exc_info=self.settings.debug,
+                )
+                raise HTTPException(status_code=500, detail=f"candidate audio enhancement failed: {ex}")
+            return FileResponse(audio_path, media_type="audio/wav")
 
         @router.post("/api/enroll")
         async def enroll(request: EnrollRequest):
@@ -191,6 +242,37 @@ class VoiceAuthEnrollmentServer:
                 raise HTTPException(status_code=404, detail=f"candidate not found: {ex}")
             except ValueError as ex:
                 raise HTTPException(status_code=400, detail=str(ex))
+            except Exception as ex:
+                logger.warning("Voice auth enrollment failed: %s", ex, exc_info=self.settings.debug)
+                raise HTTPException(status_code=503, detail=f"voice auth runtime unavailable: {ex}")
+
+        @router.post("/api/test/start")
+        async def start_test(request: TestStartRequest):
+            try:
+                profiles = await self.manager.list_profiles()
+                profile_names = set(profiles.get("profiles", []))
+                if request.user_id not in profile_names:
+                    raise ValueError(f"profile not found: {request.user_id}")
+                self.manager.start_test(
+                    request.user_id,
+                    threshold=request.threshold,
+                    min_duration=request.min_duration,
+                )
+                return self.manager.state()
+            except ValueError as ex:
+                raise HTTPException(status_code=400, detail=str(ex))
+            except Exception as ex:
+                logger.warning("Voice auth test start failed: %s", ex, exc_info=self.settings.debug)
+                raise HTTPException(status_code=503, detail=f"voice auth runtime unavailable: {ex}")
+
+        @router.post("/api/test/stop")
+        async def stop_test():
+            self.manager.stop_test()
+            return self.manager.state()
+
+        @router.get("/api/test/results")
+        async def list_test_results():
+            return {"results": self.manager.list_test_results()}
 
         return router
 
@@ -211,6 +293,10 @@ async def health():
         "ok": True,
         "mode": "voice_auth_enrollment",
         "reading_enabled": enrollment_server.manager.reading_enabled,
+        "test_enabled": enrollment_server.manager.test_enabled,
+        "test_user_id": enrollment_server.manager.test_user_id,
+        "test_threshold": enrollment_server.manager.test_threshold,
+        "test_min_duration": enrollment_server.manager.test_min_duration,
         "candidate_count": len(enrollment_server.manager.list_candidates()),
         "voice_auth_provider": settings.voice_auth_provider,
     }

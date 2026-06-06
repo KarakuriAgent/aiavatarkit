@@ -315,6 +315,8 @@ docker compose -f compose.voice-auth.yml up --build
 
 登録UIは既存サーバーと同じポートの `/` で開きます。`AIAVATAR_API_KEY` が設定されている場合は、`AIAVATAR_ADMIN_USER` / `AIAVATAR_API_KEY` の Basic 認証を使います。
 
+音声登録時は `AUDIO_ENHANCEMENT_ENABLED` の値に関係なく DeepFilterNet でノイズ抑制してから profile を作成します。ノイズ抑制に失敗した場合、raw 音声では登録せずエラーにします。
+
 WAV ファイルから直接登録する場合は以下も使えます。
 
 ```sh

@@ -38,6 +38,8 @@ class VoiceAuthenticator(ABC):
         audio_bytes: bytes,
         sample_rate: int,
         audio_duration: Optional[float] = None,
+        threshold: Optional[float] = None,
+        min_duration: Optional[float] = None,
     ) -> VoiceAuthResult:
         return await asyncio.to_thread(
             self.verify_sync,
@@ -45,6 +47,8 @@ class VoiceAuthenticator(ABC):
             audio_bytes=audio_bytes,
             sample_rate=sample_rate,
             audio_duration=audio_duration,
+            threshold=threshold,
+            min_duration=min_duration,
         )
 
     @abstractmethod
@@ -55,6 +59,8 @@ class VoiceAuthenticator(ABC):
         audio_bytes: bytes,
         sample_rate: int,
         audio_duration: Optional[float] = None,
+        threshold: Optional[float] = None,
+        min_duration: Optional[float] = None,
     ) -> VoiceAuthResult:
         ...
 

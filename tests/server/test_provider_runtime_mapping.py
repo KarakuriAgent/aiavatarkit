@@ -4,7 +4,7 @@ from aiavatar.sts.voice_auth.http import HttpVoiceAuthenticator
 from aiavatar.sts.addressing import OpenAICompatibleChatAddressingDetector
 from aiavatar.sts.audio_enhancement import DeepFilterNetAudioEnhancer
 from server.config import load_settings
-from server.providers.audio_enhancement import create_audio_enhancer
+from server.providers.audio_enhancement import create_audio_enhancer, create_required_audio_enhancer
 from server.providers.addressing import create_addressing_detector
 from server.providers import vad as vad_provider
 from server.providers.voice_auth import create_voice_auth
@@ -210,3 +210,31 @@ def test_vad_provider_maps_tenvad_from_env(tmp_path, monkeypatch):
     assert detector.kwargs["hop_size"] == 256
     assert detector.kwargs["speech_pad_ms"] == 120
     assert detector.kwargs["ten_vad_class"] == "tenvad-session-factory"
+
+
+def test_required_audio_enhancer_ignores_enabled_flag(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("AUDIO_ENHANCEMENT_ENABLED", raising=False)
+    monkeypatch.delenv("AUDIO_ENHANCEMENT_PROVIDER", raising=False)
+    monkeypatch.delenv("AUDIO_ENHANCEMENT_MODEL", raising=False)
+    monkeypatch.delenv("AUDIO_ENHANCEMENT_TIMEOUT", raising=False)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "HERMES_API_KEY=test-hermes-key",
+                "AUDIO_ENHANCEMENT_ENABLED=false",
+                "AUDIO_ENHANCEMENT_PROVIDER=deepfilternet",
+                "AUDIO_ENHANCEMENT_MODEL=DeepFilterNet2",
+                "AUDIO_ENHANCEMENT_TIMEOUT=12",
+            ]
+        )
+    )
+
+    enhancer = create_required_audio_enhancer(load_settings(env_path))
+
+    assert isinstance(enhancer, DeepFilterNetAudioEnhancer)
+    assert enhancer.command == "/usr/local/bin/deep-filter"
+    assert enhancer.model == "DeepFilterNet2"
+    assert enhancer.timeout == 12

@@ -9,6 +9,10 @@ def create_audio_enhancer(settings: Settings):
     if not settings.audio_enhancement_enabled:
         return None
 
+    return create_required_audio_enhancer(settings)
+
+
+def create_required_audio_enhancer(settings: Settings):
     if settings.audio_enhancement_provider != "deepfilternet":
         raise ValueError(f"Unsupported AUDIO_ENHANCEMENT_PROVIDER: {settings.audio_enhancement_provider}")
 

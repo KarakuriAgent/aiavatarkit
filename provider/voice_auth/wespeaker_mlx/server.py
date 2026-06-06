@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from aiavatar.sts.voice_auth.wespeaker_mlx import WespeakerMlxVoiceAuthenticator
 from server.config import Settings, load_settings
 from server.logging_config import setup_logging
+from server.providers.audio_enhancement import create_required_audio_enhancer
 
 logger = logging.getLogger("aiavatar.provider.voice_auth.wespeaker_mlx")
 
@@ -23,6 +24,8 @@ class VerifyRequest(BaseModel):
     audio_data: str
     sample_rate: int
     audio_duration: Optional[float] = None
+    threshold: Optional[float] = None
+    min_duration: Optional[float] = None
 
 
 def read_wav_pcm(path: Path) -> tuple[bytes, int]:
@@ -112,6 +115,7 @@ class WespeakerMlxRuntime:
             apply_cmn=settings.voice_auth_apply_cmn,
             debug=settings.debug,
         )
+        self.enrollment_audio_enhancer = create_required_audio_enhancer(settings)
         logger.info("wespeaker_mlx runtime loaded: profiles=%d", len(self.authenticator._profiles))
 
     async def verify(self, request: VerifyRequest):
@@ -121,9 +125,11 @@ class WespeakerMlxRuntime:
             audio_bytes=audio_bytes,
             sample_rate=request.sample_rate,
             audio_duration=request.audio_duration,
+            threshold=request.threshold,
+            min_duration=request.min_duration,
         )
         logger.info(
-            "Voice auth verify: accepted=%s reason=%s request_user_id=%s matched_voice_user_id=%s similarity=%s threshold=%s duration=%s sample_rate=%s bytes=%d",
+            "Voice auth verify: accepted=%s reason=%s request_user_id=%s matched_voice_user_id=%s similarity=%s threshold=%s duration=%s min_duration=%s sample_rate=%s bytes=%d",
             result.accepted,
             result.reason,
             result.request_user_id,
@@ -131,6 +137,7 @@ class WespeakerMlxRuntime:
             f"{result.similarity:.4f}" if result.similarity is not None else None,
             f"{result.threshold:.4f}" if result.threshold is not None else None,
             f"{request.audio_duration:.3f}" if request.audio_duration is not None else None,
+            f"{request.min_duration:.3f}" if request.min_duration is not None else None,
             request.sample_rate,
             len(audio_bytes),
         )
@@ -147,7 +154,32 @@ class WespeakerMlxRuntime:
             for upload in files:
                 path = Path(tmpdir) / upload.filename
                 path.write_bytes(await upload.read())
-                samples.append(read_wav_pcm(path))
+                audio_bytes, sample_rate = read_wav_pcm(path)
+                try:
+                    enhanced = await self.enrollment_audio_enhancer.enhance(
+                        audio_bytes=audio_bytes,
+                        sample_rate=sample_rate,
+                        session_id=f"voice-auth-enroll:{user_id}",
+                    )
+                except Exception as ex:
+                    logger.warning(
+                        "Voice auth enrollment audio enhancement failed: user_id=%s file=%s error=%s",
+                        user_id,
+                        upload.filename,
+                        ex,
+                        exc_info=self.settings.debug,
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Audio enhancement failed for enrollment file {upload.filename}: {ex}",
+                    ) from ex
+                logger.info(
+                    "Voice auth enrollment audio enhanced: user_id=%s file=%s metadata=%s",
+                    user_id,
+                    upload.filename,
+                    enhanced.to_dict(),
+                )
+                samples.append((enhanced.audio_bytes, sample_rate))
         self.authenticator.enroll_user_from_pcm(user_id, samples)
         logger.info("Voice auth profile enrolled: user_id=%s samples=%d", user_id, len(samples))
         return {

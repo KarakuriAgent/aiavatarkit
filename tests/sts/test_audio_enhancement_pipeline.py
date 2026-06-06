@@ -41,7 +41,16 @@ class RecordingVoiceAuthenticator(VoiceAuthenticator):
     def __init__(self):
         self.calls = []
 
-    def verify_sync(self, *, user_id, audio_bytes, sample_rate, audio_duration=None):
+    def verify_sync(
+        self,
+        *,
+        user_id,
+        audio_bytes,
+        sample_rate,
+        audio_duration=None,
+        threshold=None,
+        min_duration=None,
+    ):
         self.calls.append({
             "user_id": user_id,
             "audio_bytes": audio_bytes,

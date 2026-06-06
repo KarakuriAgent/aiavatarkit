@@ -14,7 +14,16 @@ class FakeVoiceAuthenticator(VoiceAuthenticator):
         self.result = result
         self.calls = 0
 
-    def verify_sync(self, *, user_id, audio_bytes, sample_rate, audio_duration=None):
+    def verify_sync(
+        self,
+        *,
+        user_id,
+        audio_bytes,
+        sample_rate,
+        audio_duration=None,
+        threshold=None,
+        min_duration=None,
+    ):
         self.calls += 1
         return self.result
 

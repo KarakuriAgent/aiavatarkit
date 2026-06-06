@@ -58,7 +58,7 @@
       background: var(--muted);
     }
     .dot.active { background: var(--ok); }
-    .toolbar, .enroll {
+    .toolbar, .enroll, .test {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
@@ -94,7 +94,7 @@
       opacity: 0.55;
       cursor: not-allowed;
     }
-    input[type="text"] {
+    input[type="text"], input[type="number"], select {
       min-height: 38px;
       min-width: 220px;
       border: 1px solid var(--line);
@@ -109,6 +109,16 @@
     }
     .message.error { color: var(--danger); }
     .message.ok { color: var(--ok); }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .badge.ok { background: #e6f4ea; color: var(--ok); }
+    .badge.reject { background: #f8e8e8; color: var(--danger); }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -182,7 +192,19 @@
       <button id="enrollButton" class="primary" type="button">選択した音声で登録</button>
     </section>
 
+    <section class="test">
+      <select id="profileSelect"></select>
+      <input id="thresholdInput" type="number" min="0" max="1" step="0.01" placeholder="threshold">
+      <input id="minDurationInput" type="number" min="0" step="0.1" placeholder="min duration">
+      <button id="testStartButton" class="primary" type="button">テスト開始</button>
+      <button id="testStopButton" type="button">テスト停止</button>
+    </section>
+
     <div id="message" class="message"></div>
+
+    <section id="testResultSection">
+      <div class="empty">テスト結果はまだありません。</div>
+    </section>
 
     <section id="candidateSection">
       <div class="empty">候補音声はまだありません。</div>
@@ -193,6 +215,12 @@
     const state = {
       candidates: [],
       selected: new Set(),
+      candidateSignature: null,
+      profiles: [],
+      profileSignature: null,
+      profileError: null,
+      testResults: [],
+      testSignature: null,
       timer: null,
     };
 
@@ -204,14 +232,30 @@
       refreshButton: document.getElementById("refreshButton"),
       clearButton: document.getElementById("clearButton"),
       enrollButton: document.getElementById("enrollButton"),
+      profileSelect: document.getElementById("profileSelect"),
+      thresholdInput: document.getElementById("thresholdInput"),
+      minDurationInput: document.getElementById("minDurationInput"),
+      testStartButton: document.getElementById("testStartButton"),
+      testStopButton: document.getElementById("testStopButton"),
       userIdInput: document.getElementById("userIdInput"),
       message: document.getElementById("message"),
+      testResultSection: document.getElementById("testResultSection"),
       candidateSection: document.getElementById("candidateSection"),
     };
 
     function setMessage(text, type = "") {
       els.message.textContent = text;
       els.message.className = `message ${type}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "-").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[char]));
     }
 
     async function requestJson(url, options = {}) {
@@ -232,11 +276,105 @@
     }
 
     function updateStateView(data) {
-      const active = Boolean(data.reading_enabled);
+      const reading = Boolean(data.reading_enabled);
+      const testing = Boolean(data.test_enabled);
+      const active = reading || testing;
       els.statusDot.classList.toggle("active", active);
-      els.statusText.textContent = active ? "読み取り中" : "停止中";
-      els.startButton.disabled = active;
-      els.stopButton.disabled = !active;
+      els.statusText.textContent = testing ? `テスト中: ${data.test_user_id || "-"}` : (reading ? "読み取り中" : "停止中");
+      els.startButton.disabled = reading || testing;
+      els.stopButton.disabled = !reading;
+      els.testStartButton.disabled = testing || !els.profileSelect.value;
+      els.testStopButton.disabled = !testing;
+      els.thresholdInput.placeholder = data.default_threshold == null ? "threshold" : `threshold ${data.default_threshold}`;
+      els.minDurationInput.placeholder = data.default_min_duration == null ? "min duration" : `min ${data.default_min_duration}s`;
+      if (testing) {
+        els.thresholdInput.value = data.test_threshold ?? "";
+        els.minDurationInput.value = data.test_min_duration ?? "";
+      }
+    }
+
+    function renderProfiles() {
+      const current = els.profileSelect.value;
+      els.profileSelect.replaceChildren();
+      if (state.profiles.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "登録データなし";
+        els.profileSelect.appendChild(option);
+        return;
+      }
+      for (const profile of state.profiles) {
+        const option = document.createElement("option");
+        option.value = profile;
+        option.textContent = profile;
+        els.profileSelect.appendChild(option);
+      }
+      if (state.profiles.includes(current)) {
+        els.profileSelect.value = current;
+      }
+    }
+
+    function candidateSignature(candidates) {
+      return candidates.map((candidate) => (
+        `${candidate.id}:${candidate.created_at}:${candidate.duration}:${candidate.audio_url}`
+      )).join("|");
+    }
+
+    function isAudioPlaying() {
+      return [...els.candidateSection.querySelectorAll("audio")].some((audio) => (
+        !audio.paused && !audio.ended
+      ));
+    }
+
+    function resultSignature(results) {
+      return results.map((result) => (
+        `${result.id}:${result.created_at}:${result.accepted}:${result.similarity}:${result.reason}`
+      )).join("|");
+    }
+
+    function renderTestResults() {
+      if (state.testResults.length === 0) {
+        els.testResultSection.innerHTML = '<div class="empty">テスト結果はまだありません。</div>';
+        return;
+      }
+      const rows = state.testResults.map((result) => {
+        const created = new Date(result.created_at).toLocaleString();
+        const duration = Number(result.duration || 0).toFixed(2);
+        const similarity = result.similarity == null ? "-" : Number(result.similarity).toFixed(4);
+        const threshold = result.threshold == null ? "-" : Number(result.threshold).toFixed(4);
+        const status = result.accepted
+          ? '<span class="badge ok">OK</span>'
+          : '<span class="badge reject">NG</span>';
+        return `
+          <tr>
+            <td data-label="結果">${status}</td>
+            <td data-label="データ" class="mono">${escapeHtml(result.user_id)}</td>
+            <td data-label="一致" class="mono">${escapeHtml(result.matched_user_id)}</td>
+            <td data-label="Similarity" class="mono">${similarity}</td>
+            <td data-label="Threshold" class="mono">${threshold}</td>
+            <td data-label="理由" class="mono">${escapeHtml(result.reason)}</td>
+            <td data-label="長さ">${duration}s</td>
+            <td data-label="時刻">${created}</td>
+          </tr>
+        `;
+      }).join("");
+      els.testResultSection.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>結果</th>
+              <th>データ</th>
+              <th>一致</th>
+              <th>Similarity</th>
+              <th>Threshold</th>
+              <th>理由</th>
+              <th>長さ</th>
+              <th>時刻</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
     }
 
     function renderCandidates() {
@@ -255,8 +393,8 @@
             <td data-label="再生"><audio controls preload="none" src="${candidate.audio_url}"></audio></td>
             <td data-label="長さ">${duration}s</td>
             <td data-label="取得時刻">${created}</td>
-            <td data-label="Session" class="mono">${candidate.session_id || "-"}</td>
-            <td data-label="User" class="mono">${candidate.user_id || "-"}</td>
+            <td data-label="Session" class="mono">${escapeHtml(candidate.session_id)}</td>
+            <td data-label="User" class="mono">${escapeHtml(candidate.user_id)}</td>
           </tr>
         `;
       }).join("");
@@ -285,15 +423,42 @@
     }
 
     async function refresh() {
-      const [serverState, candidates] = await Promise.all([
+      const [serverState, candidates, profiles, testResults] = await Promise.all([
         requestJson("/api/state"),
         requestJson("/api/candidates"),
+        requestJson("/api/profiles"),
+        requestJson("/api/test/results"),
       ]);
+      state.profiles = profiles.profiles || [];
+      const profileError = profiles.error || null;
+      if (profileError !== state.profileError) {
+        state.profileError = profileError;
+        if (profileError) {
+          setMessage("voice auth runtime が起動していないため、登録データを取得できません。", "error");
+        }
+      }
+      const nextProfileSignature = state.profiles.join("|");
+      if (nextProfileSignature !== state.profileSignature) {
+        state.profileSignature = nextProfileSignature;
+        renderProfiles();
+      }
       updateStateView(serverState);
+
       state.candidates = candidates.candidates;
       const ids = new Set(state.candidates.map((candidate) => candidate.id));
       state.selected = new Set([...state.selected].filter((id) => ids.has(id)));
-      renderCandidates();
+      const nextSignature = candidateSignature(state.candidates);
+      if (state.candidateSignature === null || (nextSignature !== state.candidateSignature && !isAudioPlaying())) {
+        state.candidateSignature = nextSignature;
+        renderCandidates();
+      }
+
+      state.testResults = testResults.results || [];
+      const nextTestSignature = resultSignature(state.testResults);
+      if (state.testSignature === null || nextTestSignature !== state.testSignature) {
+        state.testSignature = nextTestSignature;
+        renderTestResults();
+      }
     }
 
     async function startReading() {
@@ -310,6 +475,7 @@
       if (!confirm("候補音声をすべて消去しますか？")) return;
       await requestJson("/api/candidates", { method: "DELETE" });
       state.selected.clear();
+      state.candidateSignature = null;
       await refresh();
       setMessage("候補音声を消去しました。", "ok");
     }
@@ -330,6 +496,40 @@
         body: JSON.stringify({ user_id: userId, candidate_ids: candidateIds }),
       });
       setMessage(`${result.user_id} を ${result.samples} 件の音声で登録しました。`, "ok");
+      await refresh();
+    }
+
+    async function startTest() {
+      const userId = els.profileSelect.value;
+      if (!userId) {
+        setMessage("テストする登録データを選択してください。", "error");
+        return;
+      }
+      const threshold = els.thresholdInput.value === "" ? null : Number(els.thresholdInput.value);
+      const minDuration = els.minDurationInput.value === "" ? null : Number(els.minDurationInput.value);
+      if (threshold !== null && (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)) {
+        setMessage("threshold は 0 から 1 の範囲で入力してください。", "error");
+        return;
+      }
+      if (minDuration !== null && (!Number.isFinite(minDuration) || minDuration < 0)) {
+        setMessage("min duration は 0 以上で入力してください。", "error");
+        return;
+      }
+      const body = { user_id: userId };
+      if (threshold !== null) body.threshold = threshold;
+      if (minDuration !== null) body.min_duration = minDuration;
+      updateStateView(await requestJson("/api/test/start", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }));
+      state.testSignature = null;
+      await refresh();
+      setMessage("テストを開始しました。", "ok");
+    }
+
+    async function stopTest() {
+      updateStateView(await requestJson("/api/test/stop", { method: "POST" }));
+      setMessage("テストを停止しました。", "ok");
     }
 
     function handle(action) {
@@ -341,6 +541,9 @@
     els.refreshButton.addEventListener("click", () => handle(refresh));
     els.clearButton.addEventListener("click", () => handle(clearCandidates));
     els.enrollButton.addEventListener("click", () => handle(enroll));
+    els.testStartButton.addEventListener("click", () => handle(startTest));
+    els.testStopButton.addEventListener("click", () => handle(stopTest));
+    els.profileSelect.addEventListener("change", () => handle(refresh));
 
     handle(refresh);
     state.timer = setInterval(() => handle(refresh), 2500);

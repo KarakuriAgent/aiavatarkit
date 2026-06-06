@@ -27,22 +27,38 @@ class HttpVoiceAuthenticator(VoiceAuthenticator):
         audio_bytes: bytes,
         sample_rate: int,
         audio_duration: Optional[float] = None,
+        threshold: Optional[float] = None,
+        min_duration: Optional[float] = None,
     ) -> VoiceAuthResult:
         headers = self._headers()
+        payload = {
+            "user_id": user_id,
+            "audio_data": base64.b64encode(audio_bytes).decode("ascii"),
+            "sample_rate": sample_rate,
+            "audio_duration": audio_duration,
+        }
+        if threshold is not None:
+            payload["threshold"] = threshold
+        if min_duration is not None:
+            payload["min_duration"] = min_duration
         resp = await self.http_client.post(
             f"{self.base_url}/verify",
             headers=headers,
-            json={
-                "user_id": user_id,
-                "audio_data": base64.b64encode(audio_bytes).decode("ascii"),
-                "sample_rate": sample_rate,
-                "audio_duration": audio_duration,
-            },
+            json=payload,
         )
         resp.raise_for_status()
         return VoiceAuthResult(**resp.json())
 
-    def verify_sync(self, *, user_id, audio_bytes, sample_rate, audio_duration=None) -> VoiceAuthResult:
+    def verify_sync(
+        self,
+        *,
+        user_id,
+        audio_bytes,
+        sample_rate,
+        audio_duration=None,
+        threshold=None,
+        min_duration=None,
+    ) -> VoiceAuthResult:
         raise RuntimeError("HttpVoiceAuthenticator.verify_sync is not supported; use verify().")
 
     async def enroll_wavs(self, *, user_id: str, wav_files: list[tuple[str, bytes]]):
@@ -61,6 +77,11 @@ class HttpVoiceAuthenticator(VoiceAuthenticator):
 
     async def health(self):
         resp = await self.http_client.get(f"{self.base_url}/health", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    async def profiles(self):
+        resp = await self.http_client.get(f"{self.base_url}/profiles", headers=self._headers())
         resp.raise_for_status()
         return resp.json()
 

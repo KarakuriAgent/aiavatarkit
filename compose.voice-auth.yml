@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     working_dir: /app
     ports:
-      - "127.0.0.1:${HOST_PORT:-8000}:8000"
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8000}:8000"
     env_file:
       - path: .env
         required: false
