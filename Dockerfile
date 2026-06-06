@@ -10,8 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     curl \
+    espeak-ng \
     ffmpeg \
     git \
+    libsndfile1 \
+    portaudio19-dev \
+    sox \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv==0.7.3
 

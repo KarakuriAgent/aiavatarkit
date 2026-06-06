@@ -36,6 +36,9 @@ async def health():
             if settings.pre_vad_noise_suppression_enabled
             else None
         ),
+        "audio_wakeword_enabled": settings.audio_wakeword_enabled,
+        "audio_wakeword_provider": settings.audio_wakeword_provider if settings.audio_wakeword_enabled else None,
+        "audio_wakeword_model_count": len(settings.audio_wakeword_model_paths),
         "voice_auth_enabled": settings.voice_auth_enabled,
         "voice_auth_provider": settings.voice_auth_provider if settings.voice_auth_enabled else None,
     }

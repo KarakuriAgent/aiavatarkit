@@ -96,6 +96,16 @@ class Settings:
     pre_vad_auto_gain_dbfs: int
     pre_vad_noise_suppression_fail_open: bool
 
+    audio_wakeword_enabled: bool
+    audio_wakeword_provider: str
+    audio_wakeword_model_paths: List[str]
+    audio_wakeword_threshold: float
+    audio_wakeword_frame_ms: int
+    audio_wakeword_activation_window: float
+    audio_wakeword_cooldown: float
+    audio_wakeword_inference_framework: str
+    wakeword_enrollment_dir: str
+
     audio_enhancement_enabled: bool
     audio_enhancement_provider: str
     audio_enhancement_command: str
@@ -244,6 +254,15 @@ def load_settings(env_path: Path | None = None) -> Settings:
         pre_vad_noise_suppression_level=int(os.environ.get("PRE_VAD_NOISE_SUPPRESSION_LEVEL", "2")),
         pre_vad_auto_gain_dbfs=int(os.environ.get("PRE_VAD_AUTO_GAIN_DBFS", "0")),
         pre_vad_noise_suppression_fail_open=bool_env("PRE_VAD_NOISE_SUPPRESSION_FAIL_OPEN", True),
+        audio_wakeword_enabled=bool_env("AUDIO_WAKEWORD_ENABLED", False),
+        audio_wakeword_provider=os.environ.get("AUDIO_WAKEWORD_PROVIDER", "livekit_wakeword"),
+        audio_wakeword_model_paths=list_env("AUDIO_WAKEWORD_MODEL_PATHS"),
+        audio_wakeword_threshold=float(os.environ.get("AUDIO_WAKEWORD_THRESHOLD", "0.5")),
+        audio_wakeword_frame_ms=int(os.environ.get("AUDIO_WAKEWORD_FRAME_MS", "80")),
+        audio_wakeword_activation_window=float(os.environ.get("AUDIO_WAKEWORD_ACTIVATION_WINDOW", "4")),
+        audio_wakeword_cooldown=float(os.environ.get("AUDIO_WAKEWORD_COOLDOWN", "2")),
+        audio_wakeword_inference_framework=os.environ.get("AUDIO_WAKEWORD_INFERENCE_FRAMEWORK", "onnx"),
+        wakeword_enrollment_dir=os.environ.get("WAKEWORD_ENROLLMENT_DIR", "data/wakeword_enrollment"),
         audio_enhancement_enabled=bool_env("AUDIO_ENHANCEMENT_ENABLED", False),
         audio_enhancement_provider=os.environ.get("AUDIO_ENHANCEMENT_PROVIDER", "deepfilternet"),
         audio_enhancement_command="/usr/local/bin/deep-filter",

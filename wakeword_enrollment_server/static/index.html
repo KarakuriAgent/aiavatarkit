@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wakeword Enrollment</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #fff;
+      --line: #d7dde6;
+      --text: #171a1f;
+      --muted: #66707f;
+      --accent: #126e82;
+      --accent-strong: #0d5666;
+      --danger: #b33131;
+      --ok: #2f7d46;
+      --shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    main { max-width: 1160px; margin: 0 auto; padding: 24px; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
+    .status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); white-space: nowrap; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--muted); }
+    .dot.active { background: var(--ok); }
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 12px;
+      margin-bottom: 14px;
+    }
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      min-height: 38px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover { background: var(--accent-strong); }
+    button.danger { color: var(--danger); border-color: #e1b4b4; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+    input, select {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    input[type="text"] { min-width: 220px; }
+    input[type="number"] { width: 120px; }
+    input.short { width: 120px; min-width: 0; }
+    input.medium { width: 180px; min-width: 0; }
+    .bar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 38px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .bar-title {
+      width: 100%;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }
+    .message { min-height: 20px; color: var(--muted); margin: 4px 0 12px; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--ok); }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: #eef2f6;
+    }
+    tr:last-child td { border-bottom: 0; }
+    audio { width: 220px; max-width: 100%; height: 36px; }
+    select.role-select { min-width: 104px; }
+    .empty {
+      padding: 28px;
+      color: var(--muted);
+      text-align: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .badge.ok { background: #e6f4ea; color: var(--ok); }
+    .badge.reject { background: #f8e8e8; color: var(--danger); }
+    .log {
+      white-space: pre-wrap;
+      max-height: 360px;
+      overflow: auto;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      box-shadow: var(--shadow);
+    }
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      table, thead, tbody, th, td, tr { display: block; }
+      thead { display: none; }
+      tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+      td { border-bottom: 0; padding: 6px 12px; }
+      td::before {
+        content: attr(data-label);
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 3px;
+      }
+      audio { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Wakeword Enrollment</h1>
+      <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">停止中</span></div>
+    </header>
+
+    <section class="bar">
+      <input id="wakewordInput" type="text" placeholder="ウェイクワード名" autocomplete="off">
+      <button id="startButton" class="primary" type="button">読み取り開始</button>
+      <button id="stopButton" type="button">読み取り停止</button>
+      <button id="refreshButton" type="button">更新</button>
+      <button id="clearButton" class="danger" type="button">候補を消去</button>
+    </section>
+
+    <section class="bar">
+      <input id="modelWakewordInput" type="text" placeholder="モデル名" autocomplete="off">
+      <input id="thresholdInput" type="number" min="0" max="1" step="0.01" placeholder="threshold">
+      <input id="modelFileInput" type="file" accept=".onnx">
+      <button id="uploadButton" class="primary" type="button">ONNXを追加</button>
+    </section>
+
+    <section class="bar">
+      <div class="bar-title">ONNX生成</div>
+      <input id="trainWakewordInput" type="text" placeholder="ウェイクワード名" autocomplete="off">
+      <input id="trainModelNameInput" class="medium" type="text" placeholder="model_name">
+      <select id="trainBackendSelect">
+        <option value="configured_tts">configured TTS</option>
+        <option value="voxcpm">voxcpm (heavy)</option>
+        <option value="piper_vits">piper_vits</option>
+      </select>
+      <select id="trainModelSizeSelect">
+        <option value="tiny">tiny</option>
+        <option value="small">small</option>
+        <option value="medium">medium</option>
+      </select>
+      <select id="trainPositiveSourceSelect">
+        <option value="recorded_only">positive: recorded</option>
+        <option value="recorded_plus_tts">positive: recorded + TTS</option>
+        <option value="configured_tts_only">positive: TTS</option>
+      </select>
+      <select id="trainNegativeSourceSelect">
+        <option value="recorded_plus_tts">negative: recorded + TTS</option>
+        <option value="recorded_only">negative: recorded</option>
+        <option value="configured_tts_only">negative: TTS</option>
+      </select>
+      <label>samples <input id="trainSamplesInput" class="short" type="number" min="1" step="1" value="500"></label>
+      <label>val <input id="trainSamplesValInput" class="short" type="number" min="1" step="1" value="100"></label>
+      <label>steps <input id="trainStepsInput" class="short" type="number" min="1" step="1" value="2000"></label>
+      <label>threshold <input id="trainThresholdInput" class="short" type="number" min="0" max="1" step="0.01" placeholder="0.5"></label>
+      <label><input id="trainSkipAcavInput" type="checkbox" checked> ACAVを省略</label>
+      <label><input id="trainEvalInput" type="checkbox"> eval</label>
+      <button id="trainButton" class="primary" type="button">生成開始</button>
+    </section>
+
+    <div id="message" class="message"></div>
+
+    <div class="grid">
+      <section id="candidateSection"><div class="empty">候補音声はまだありません。</div></section>
+      <section id="modelSection"><div class="empty">モデルはまだありません。</div></section>
+    </div>
+
+    <section id="resultSection" style="margin-top:14px;"><div class="empty">テスト結果はまだありません。</div></section>
+    <section id="trainingSection" style="margin-top:14px;"><div class="empty">生成ジョブはまだありません。</div></section>
+    <section id="trainingLogSection" style="margin-top:14px;"></section>
+  </main>
+
+  <script>
+    const state = {
+      candidates: [],
+      models: [],
+      results: [],
+      jobs: [],
+      selectedCandidateId: "",
+      selectedJobId: "",
+      timer: null,
+    };
+
+    const els = {
+      statusDot: document.getElementById("statusDot"),
+      statusText: document.getElementById("statusText"),
+      wakewordInput: document.getElementById("wakewordInput"),
+      modelWakewordInput: document.getElementById("modelWakewordInput"),
+      thresholdInput: document.getElementById("thresholdInput"),
+      modelFileInput: document.getElementById("modelFileInput"),
+      trainWakewordInput: document.getElementById("trainWakewordInput"),
+      trainModelNameInput: document.getElementById("trainModelNameInput"),
+      trainBackendSelect: document.getElementById("trainBackendSelect"),
+      trainModelSizeSelect: document.getElementById("trainModelSizeSelect"),
+      trainPositiveSourceSelect: document.getElementById("trainPositiveSourceSelect"),
+      trainNegativeSourceSelect: document.getElementById("trainNegativeSourceSelect"),
+      trainSamplesInput: document.getElementById("trainSamplesInput"),
+      trainSamplesValInput: document.getElementById("trainSamplesValInput"),
+      trainStepsInput: document.getElementById("trainStepsInput"),
+      trainThresholdInput: document.getElementById("trainThresholdInput"),
+      trainSkipAcavInput: document.getElementById("trainSkipAcavInput"),
+      trainEvalInput: document.getElementById("trainEvalInput"),
+      startButton: document.getElementById("startButton"),
+      stopButton: document.getElementById("stopButton"),
+      refreshButton: document.getElementById("refreshButton"),
+      clearButton: document.getElementById("clearButton"),
+      uploadButton: document.getElementById("uploadButton"),
+      trainButton: document.getElementById("trainButton"),
+      message: document.getElementById("message"),
+      candidateSection: document.getElementById("candidateSection"),
+      modelSection: document.getElementById("modelSection"),
+      resultSection: document.getElementById("resultSection"),
+      trainingSection: document.getElementById("trainingSection"),
+      trainingLogSection: document.getElementById("trainingLogSection"),
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "-").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[char]));
+    }
+
+    function setMessage(text, type = "") {
+      els.message.textContent = text;
+      els.message.className = `message ${type}`;
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: "same-origin",
+        headers: options.body instanceof FormData ? {} : { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const data = await response.json();
+          detail = data.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    function updateStateView(data) {
+      const reading = Boolean(data.reading_enabled);
+      els.statusDot.classList.toggle("active", reading);
+      els.statusText.textContent = reading ? `読み取り中: ${data.reading_wakeword || "-"}` : "停止中";
+      els.startButton.disabled = reading;
+      els.stopButton.disabled = !reading;
+      els.thresholdInput.placeholder = data.default_threshold == null ? "threshold" : `threshold ${data.default_threshold}`;
+    }
+
+    function inferredTargetWakeword() {
+      const explicit = els.trainWakewordInput.value.trim() || els.wakewordInput.value.trim();
+      if (explicit) return explicit;
+      if (state.models.length > 0 && state.models[0].wakeword) return state.models[0].wakeword;
+      const counts = new Map();
+      state.candidates.forEach((candidate) => {
+        const name = (candidate.wakeword || "").trim();
+        if (!name) return;
+        counts.set(name, (counts.get(name) || 0) + 1);
+      });
+      let best = "";
+      let bestCount = 0;
+      counts.forEach((count, name) => {
+        if (count > bestCount) {
+          best = name;
+          bestCount = count;
+        }
+      });
+      return best;
+    }
+
+    function candidateRole(candidate) {
+      if (["positive", "negative", "ignore"].includes(candidate.role)) return candidate.role;
+      const name = (candidate.wakeword || "").trim();
+      if (!name) return "ignore";
+      const target = inferredTargetWakeword();
+      return target && name === target ? "positive" : "negative";
+    }
+
+    function roleOptions(role) {
+      return ["positive", "negative", "ignore"].map((value) => (
+        `<option value="${value}" ${role === value ? "selected" : ""}>${value}</option>`
+      )).join("");
+    }
+
+    function renderCandidates() {
+      if (state.candidates.length === 0) {
+        els.candidateSection.innerHTML = '<div class="empty">候補音声はまだありません。</div>';
+        return;
+      }
+      const rows = state.candidates.map((candidate, index) => {
+        const checked = state.selectedCandidateId === candidate.id ? "checked" : "";
+        const created = new Date(candidate.created_at).toLocaleString();
+        const duration = Number(candidate.duration || 0).toFixed(2);
+        const role = candidateRole(candidate);
+        return `
+          <tr>
+            <td data-label="選択"><input type="radio" name="candidate" data-id="${candidate.id}" ${checked}></td>
+            <td data-label="#">${index + 1}</td>
+            <td data-label="再生"><audio controls preload="none" src="${candidate.audio_url}"></audio></td>
+            <td data-label="Role">
+              <select class="role-select" data-role-candidate="${candidate.id}">
+                ${roleOptions(role)}
+              </select>
+            </td>
+            <td data-label="名前" class="mono">${escapeHtml(candidate.wakeword)}</td>
+            <td data-label="長さ">${duration}s</td>
+            <td data-label="時刻">${created}</td>
+          </tr>
+        `;
+      }).join("");
+      els.candidateSection.innerHTML = `
+        <table>
+          <thead><tr><th>選択</th><th>#</th><th>再生</th><th>Role</th><th>名前</th><th>長さ</th><th>時刻</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+      els.candidateSection.querySelectorAll('input[name="candidate"]').forEach((radio) => {
+        radio.addEventListener("change", () => {
+          state.selectedCandidateId = radio.dataset.id;
+        });
+      });
+      els.candidateSection.querySelectorAll("[data-role-candidate]").forEach((select) => {
+        select.addEventListener("change", () => {
+          updateCandidateRole(select.dataset.roleCandidate, select.value).catch((ex) => setMessage(ex.message, "error"));
+        });
+      });
+    }
+
+    function renderModels() {
+      if (state.models.length === 0) {
+        els.modelSection.innerHTML = '<div class="empty">モデルはまだありません。</div>';
+        return;
+      }
+      const rows = state.models.map((model) => `
+        <tr>
+          <td data-label="名前" class="mono">${escapeHtml(model.wakeword)}</td>
+          <td data-label="Threshold" class="mono">${Number(model.threshold).toFixed(2)}</td>
+          <td data-label="ID" class="mono">${escapeHtml(model.id)}</td>
+          <td data-label="操作">
+            <button type="button" data-test="${model.id}">テスト</button>
+            <button class="danger" type="button" data-delete="${model.id}">削除</button>
+          </td>
+        </tr>
+      `).join("");
+      els.modelSection.innerHTML = `
+        <table>
+          <thead><tr><th>名前</th><th>Threshold</th><th>ID</th><th>操作</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+      els.modelSection.querySelectorAll("[data-test]").forEach((button) => {
+        button.addEventListener("click", () => testModel(button.dataset.test));
+      });
+      els.modelSection.querySelectorAll("[data-delete]").forEach((button) => {
+        button.addEventListener("click", () => deleteModel(button.dataset.delete));
+      });
+    }
+
+    function renderResults() {
+      if (state.results.length === 0) {
+        els.resultSection.innerHTML = '<div class="empty">テスト結果はまだありません。</div>';
+        return;
+      }
+      const rows = state.results.map((result) => {
+        const status = result.detected
+          ? '<span class="badge ok">検出</span>'
+          : '<span class="badge reject">未検出</span>';
+        const score = result.score == null ? "-" : Number(result.score).toFixed(4);
+        const created = new Date(result.created_at).toLocaleString();
+        return `
+          <tr>
+            <td data-label="結果">${status}</td>
+            <td data-label="名前" class="mono">${escapeHtml(result.wakeword)}</td>
+            <td data-label="Score" class="mono">${score}</td>
+            <td data-label="Threshold" class="mono">${Number(result.threshold).toFixed(4)}</td>
+            <td data-label="Matched" class="mono">${escapeHtml(result.matched_wakeword)}</td>
+            <td data-label="時刻">${created}</td>
+          </tr>
+        `;
+      }).join("");
+      els.resultSection.innerHTML = `
+        <table>
+          <thead><tr><th>結果</th><th>名前</th><th>Score</th><th>Threshold</th><th>Matched</th><th>時刻</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function renderTrainingJobs() {
+      const active = state.jobs.some((job) => job.status === "queued" || job.status === "running");
+      els.trainButton.disabled = active;
+      if (state.jobs.length === 0) {
+        els.trainingSection.innerHTML = '<div class="empty">生成ジョブはまだありません。</div>';
+        return;
+      }
+      const rows = state.jobs.map((job) => {
+        const created = new Date(job.created_at).toLocaleString();
+        const statusClass = job.status === "succeeded" ? "ok" : (job.status === "failed" ? "reject" : "");
+        const model = job.model_id ? escapeHtml(job.model_id) : "-";
+        return `
+          <tr>
+            <td data-label="状態"><span class="badge ${statusClass}">${escapeHtml(job.status)}</span></td>
+            <td data-label="名前" class="mono">${escapeHtml(job.wakeword)}</td>
+            <td data-label="Model" class="mono">${escapeHtml(job.model_name)}</td>
+            <td data-label="Samples" class="mono">${escapeHtml(job.n_samples)} / ${escapeHtml(job.steps)}</td>
+            <td data-label="登録Model" class="mono">${model}</td>
+            <td data-label="時刻">${created}</td>
+            <td data-label="操作"><button type="button" data-log="${job.id}">ログ</button></td>
+          </tr>
+        `;
+      }).join("");
+      els.trainingSection.innerHTML = `
+        <table>
+          <thead><tr><th>状態</th><th>名前</th><th>Model</th><th>Samples/Steps</th><th>登録Model</th><th>時刻</th><th>操作</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+      els.trainingSection.querySelectorAll("[data-log]").forEach((button) => {
+        button.addEventListener("click", () => showTrainingLog(button.dataset.log));
+      });
+    }
+
+    async function refresh() {
+      const [serverState, candidates, models, results, jobs] = await Promise.all([
+        requestJson("/api/state"),
+        requestJson("/api/candidates"),
+        requestJson("/api/models"),
+        requestJson("/api/test/results"),
+        requestJson("/api/training/jobs"),
+      ]);
+      updateStateView(serverState);
+      state.candidates = candidates.candidates || [];
+      state.models = models.models || [];
+      state.results = results.results || [];
+      state.jobs = jobs.jobs || [];
+      if (!state.candidates.some((candidate) => candidate.id === state.selectedCandidateId)) {
+        state.selectedCandidateId = "";
+      }
+      renderCandidates();
+      renderModels();
+      renderResults();
+      renderTrainingJobs();
+      if (state.selectedJobId) {
+        showTrainingLog(state.selectedJobId, true).catch(() => {});
+      }
+    }
+
+    async function startReading() {
+      const wakeword = els.wakewordInput.value.trim();
+      updateStateView(await requestJson("/api/reading/start", {
+        method: "POST",
+        body: JSON.stringify({ wakeword: wakeword || null }),
+      }));
+      setMessage("読み取りを開始しました。", "ok");
+    }
+
+    async function stopReading() {
+      updateStateView(await requestJson("/api/reading/stop", { method: "POST" }));
+      setMessage("読み取りを停止しました。", "ok");
+    }
+
+    async function clearCandidates() {
+      if (!confirm("候補音声をすべて消去しますか？")) return;
+      await requestJson("/api/candidates", { method: "DELETE" });
+      state.selectedCandidateId = "";
+      await refresh();
+      setMessage("候補音声を消去しました。", "ok");
+    }
+
+    async function updateCandidateRole(candidateId, role) {
+      const updated = await requestJson(`/api/candidates/${encodeURIComponent(candidateId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      });
+      const candidate = state.candidates.find((item) => item.id === candidateId);
+      if (candidate) candidate.role = updated.role;
+      setMessage("候補の role を更新しました。", "ok");
+    }
+
+    async function uploadModel() {
+      const file = els.modelFileInput.files[0];
+      const wakeword = els.modelWakewordInput.value.trim();
+      const threshold = els.thresholdInput.value === "" ? "" : Number(els.thresholdInput.value);
+      if (!wakeword) {
+        setMessage("モデル名を入力してください。", "error");
+        return;
+      }
+      if (!file) {
+        setMessage("ONNXファイルを選択してください。", "error");
+        return;
+      }
+      if (threshold !== "" && (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)) {
+        setMessage("threshold は 0 から 1 の範囲で入力してください。", "error");
+        return;
+      }
+      const body = new FormData();
+      body.append("wakeword", wakeword);
+      if (threshold !== "") body.append("threshold", String(threshold));
+      body.append("file", file);
+      await requestJson("/api/models", { method: "POST", body });
+      els.modelFileInput.value = "";
+      await refresh();
+      setMessage("モデルを追加しました。", "ok");
+    }
+
+    async function testModel(modelId) {
+      if (!state.selectedCandidateId) {
+        setMessage("テストする候補音声を選択してください。", "error");
+        return;
+      }
+      await requestJson(`/api/models/${encodeURIComponent(modelId)}/test`, {
+        method: "POST",
+        body: JSON.stringify({ candidate_id: state.selectedCandidateId }),
+      });
+      await refresh();
+      setMessage("テストを実行しました。", "ok");
+    }
+
+    async function deleteModel(modelId) {
+      if (!confirm("モデルを削除しますか？")) return;
+      await requestJson(`/api/models/${encodeURIComponent(modelId)}`, { method: "DELETE" });
+      await refresh();
+      setMessage("モデルを削除しました。", "ok");
+    }
+
+    async function startTraining() {
+      const wakeword = els.trainWakewordInput.value.trim();
+      const modelName = els.trainModelNameInput.value.trim();
+      const threshold = els.trainThresholdInput.value === "" ? null : Number(els.trainThresholdInput.value);
+      const nSamples = Number(els.trainSamplesInput.value);
+      const nSamplesVal = Number(els.trainSamplesValInput.value);
+      const steps = Number(els.trainStepsInput.value);
+      if (!wakeword) {
+        setMessage("生成するウェイクワード名を入力してください。", "error");
+        return;
+      }
+      if (threshold !== null && (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)) {
+        setMessage("threshold は 0 から 1 の範囲で入力してください。", "error");
+        return;
+      }
+      if (![nSamples, nSamplesVal, steps].every((value) => Number.isFinite(value) && value > 0)) {
+        setMessage("samples / val / steps は 1 以上で入力してください。", "error");
+        return;
+      }
+      await requestJson("/api/training/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          wakeword,
+          target_phrases: [wakeword],
+          model_name: modelName || null,
+          threshold,
+          tts_backend: els.trainBackendSelect.value,
+          model_size: els.trainModelSizeSelect.value,
+          positive_source: els.trainPositiveSourceSelect.value,
+          negative_source: els.trainNegativeSourceSelect.value,
+          n_samples: nSamples,
+          n_samples_val: nSamplesVal,
+          steps,
+          skip_acav: els.trainSkipAcavInput.checked,
+          run_eval: els.trainEvalInput.checked,
+        }),
+      });
+      await refresh();
+      setMessage("ONNX生成ジョブを開始しました。", "ok");
+    }
+
+    async function showTrainingLog(jobId, silent = false) {
+      state.selectedJobId = jobId;
+      const data = await requestJson(`/api/training/jobs/${encodeURIComponent(jobId)}/log`);
+      els.trainingLogSection.innerHTML = `<pre class="log">${escapeHtml(data.log || "")}</pre>`;
+      if (!silent) setMessage("ログを表示しました。", "ok");
+    }
+
+    els.startButton.addEventListener("click", () => startReading().catch((ex) => setMessage(ex.message, "error")));
+    els.stopButton.addEventListener("click", () => stopReading().catch((ex) => setMessage(ex.message, "error")));
+    els.refreshButton.addEventListener("click", () => refresh().catch((ex) => setMessage(ex.message, "error")));
+    els.clearButton.addEventListener("click", () => clearCandidates().catch((ex) => setMessage(ex.message, "error")));
+    els.uploadButton.addEventListener("click", () => uploadModel().catch((ex) => setMessage(ex.message, "error")));
+    els.trainButton.addEventListener("click", () => startTraining().catch((ex) => setMessage(ex.message, "error")));
+
+    refresh().catch((ex) => setMessage(ex.message, "error"));
+    state.timer = setInterval(() => refresh().catch(() => {}), 3000);
+  </script>
+</body>
+</html>

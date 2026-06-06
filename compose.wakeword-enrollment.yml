@@ -1,0 +1,51 @@
+services:
+  wakeword-enrollment-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      AIAVATAR_DB_PATH: /app/data/aiavatar.db
+      WAKEWORD_ENROLLMENT_DIR: /app/data/wakeword_enrollment
+      WAKEWORD_ENROLLMENT_UV_SYNC_ARGS: "${WAKEWORD_ENROLLMENT_UV_SYNC_ARGS:---extra wakeword-training}"
+      HF_HUB_DISABLE_XET: "1"
+    volumes:
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
+      - ./README.md:/app/README.md:ro
+      - ./LICENSE:/app/LICENSE:ro
+      - ./aiavatar:/app/aiavatar
+      - ./server:/app/server
+      - ./voice_auth_server:/app/voice_auth_server
+      - ./wakeword_enrollment_server:/app/wakeword_enrollment_server
+      - ./models:/app/models
+      - wakeword-enrollment-uv-venv:/app/.venv
+      - uv-cache:/root/.cache/uv
+      - torch-cache:/root/.cache/torch
+      - app-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - sh
+      - -c
+      - uv sync --frozen $${WAKEWORD_ENROLLMENT_UV_SYNC_ARGS:-} && uv run uvicorn wakeword_enrollment_server.server:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  wakeword-enrollment-uv-venv:
+  uv-cache:
+  torch-cache:
+  app-data:

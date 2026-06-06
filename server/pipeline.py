@@ -1,6 +1,7 @@
 from aiavatar.adapter.websocket.server import AIAvatarWebSocketServer
 
 from .config import Settings
+from .providers.audio_wakeword import create_audio_wakeword_detector
 from .providers.llm import create_llm
 from .providers.audio_enhancement import create_audio_enhancer
 from .providers.addressing import create_addressing_detector
@@ -17,6 +18,7 @@ def create_aiavatar_app(settings: Settings):
     llm = create_llm(settings)
     tts = create_tts(settings)
     pre_vad_audio_processor = create_pre_vad_audio_processor(settings)
+    audio_wakeword_detector = create_audio_wakeword_detector(settings)
     audio_enhancer = create_audio_enhancer(settings)
     voice_auth = create_voice_auth(settings)
     addressing_detector = create_addressing_detector(settings)
@@ -27,6 +29,7 @@ def create_aiavatar_app(settings: Settings):
         llm=llm,
         tts=tts,
         pre_vad_audio_processor=pre_vad_audio_processor,
+        audio_wakeword_detector=audio_wakeword_detector,
         audio_enhancer=audio_enhancer,
         audio_enhancement_fail_open=settings.audio_enhancement_fail_open,
         audio_enhancement_record_raw=settings.audio_enhancement_record_raw,

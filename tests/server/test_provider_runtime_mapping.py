@@ -6,6 +6,7 @@ from aiavatar.sts.audio_enhancement import DeepFilterNetAudioEnhancer
 from server.config import load_settings
 from server.providers.audio_enhancement import create_audio_enhancer, create_required_audio_enhancer
 from server.providers.addressing import create_addressing_detector
+from server.providers import audio_wakeword as audio_wakeword_provider
 from server.providers import pre_vad_noise_suppression as pre_vad_provider
 from server.providers import vad as vad_provider
 from server.providers.voice_auth import create_voice_auth
@@ -199,6 +200,61 @@ def test_pre_vad_noise_suppression_provider_maps_to_webrtc_noise_gain(tmp_path, 
     assert processor.kwargs["noise_suppression_level"] == 4
     assert processor.kwargs["auto_gain_dbfs"] == 0
     assert processor.kwargs["fail_open"] is False
+
+
+def test_audio_wakeword_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_ENABLED", raising=False)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("HERMES_API_KEY=test-hermes-key")
+
+    detector = audio_wakeword_provider.create_audio_wakeword_detector(load_settings(env_path))
+
+    assert detector is None
+
+
+def test_audio_wakeword_provider_maps_to_livekit_wakeword(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_ENABLED", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_PROVIDER", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_MODEL_PATHS", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_THRESHOLD", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_ACTIVATION_WINDOW", raising=False)
+    monkeypatch.delenv("AUDIO_WAKEWORD_COOLDOWN", raising=False)
+
+    class DummyLiveKitWakewordDetector:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        audio_wakeword_provider,
+        "LiveKitWakewordDetector",
+        DummyLiveKitWakewordDetector,
+    )
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "HERMES_API_KEY=test-hermes-key",
+                "AUDIO_WAKEWORD_ENABLED=true",
+                "AUDIO_WAKEWORD_PROVIDER=livekit_wakeword",
+                "AUDIO_WAKEWORD_MODEL_PATHS=models/wakewords/robo.onnx,models/wakewords/kano.onnx",
+                "AUDIO_WAKEWORD_THRESHOLD=0.62",
+                "AUDIO_WAKEWORD_ACTIVATION_WINDOW=5",
+                "AUDIO_WAKEWORD_COOLDOWN=1.5",
+            ]
+        )
+    )
+
+    detector = audio_wakeword_provider.create_audio_wakeword_detector(load_settings(env_path))
+
+    assert isinstance(detector, DummyLiveKitWakewordDetector)
+    assert detector.kwargs["model_paths"] == ["models/wakewords/robo.onnx", "models/wakewords/kano.onnx"]
+    assert detector.kwargs["threshold"] == 0.62
+    assert detector.kwargs["activation_window"] == 5
+    assert detector.kwargs["cooldown"] == 1.5
 
 
 def test_vad_provider_maps_tenvad_from_env(tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ from ...sts.audio_preprocessing import StreamingAudioProcessor
 from ...sts.audio_enhancement import AudioEnhancer
 from ...sts.voice_auth import VoiceAuthenticator
 from ...sts.addressing import AddressingDetector
+from ...sts.wakeword import StreamingWakewordDetector
 from ..models import AvatarControlRequest, AIAvatarRequest, AIAvatarResponse
 from ..base import Adapter
 
@@ -58,6 +59,7 @@ class AIAvatarWebSocketServer(Adapter):
         llm: LLMService = None,
         tts: SpeechSynthesizer = None,
         pre_vad_audio_processor: StreamingAudioProcessor = None,
+        audio_wakeword_detector: StreamingWakewordDetector = None,
         audio_enhancer: AudioEnhancer = None,
         voice_auth: VoiceAuthenticator = None,
         addressing_detector: AddressingDetector = None,
@@ -135,6 +137,7 @@ class AIAvatarWebSocketServer(Adapter):
             # Pipeline
             wakewords=wakewords,
             wakeword_timeout=wakeword_timeout,
+            audio_wakeword_detector=audio_wakeword_detector,
             merge_request_threshold=merge_request_threshold,
             merge_request_prefix=merge_request_prefix,
             timestamp_interval_seconds=timestamp_interval_seconds,
@@ -175,6 +178,9 @@ class AIAvatarWebSocketServer(Adapter):
         # WebSocket processing
         self.response_audio_chunk_size = response_audio_chunk_size
         self.pre_vad_audio_processor = pre_vad_audio_processor
+        if sts is not None and audio_wakeword_detector is not None:
+            self.sts.audio_wakeword_detector = audio_wakeword_detector
+        self.audio_wakeword_detector = getattr(self.sts, "audio_wakeword_detector", None)
 
         # API Key
         self.api_key = api_key
@@ -217,6 +223,9 @@ class AIAvatarWebSocketServer(Adapter):
             "response_audio_chunk_size": self.response_audio_chunk_size,
             "pre_vad_audio_processor": self.pre_vad_audio_processor.get_config()
             if self.pre_vad_audio_processor
+            else None,
+            "audio_wakeword_detector": self.audio_wakeword_detector.get_config()
+            if self.audio_wakeword_detector
             else None,
             "debug": self.debug,
         }
@@ -583,6 +592,8 @@ class AIAvatarWebSocketServer(Adapter):
                     await self.sts.finalize(session_data.id)
                     if self.pre_vad_audio_processor:
                         self.pre_vad_audio_processor.reset_session(session_data.id)
+                    if self.audio_wakeword_detector:
+                        self.audio_wakeword_detector.reset_session(session_data.id)
                     if session_data.id in self.websockets:
                         del self.websockets[session_data.id]
                     if session_data.id in self.sessions:

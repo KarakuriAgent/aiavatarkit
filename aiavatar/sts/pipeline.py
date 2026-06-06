@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import json
 import logging
 import re
-from time import time
+from time import monotonic, time
 import traceback
 from typing import AsyncGenerator, Tuple, List, Optional
 from uuid import uuid4
@@ -27,6 +27,7 @@ from .audio_enhancement import AudioEnhancer
 from .session_state_manager import SessionStateManager, SQLiteSessionStateManager
 from .voice_auth import VoiceAuthenticator
 from .addressing import AddressingDetector
+from .wakeword import StreamingWakewordDetector
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class STSPipeline:
         tts_voicevox_speaker: int = 46,
         wakewords: List[str] = None,
         wakeword_timeout: float = 60.0,
+        audio_wakeword_detector: StreamingWakewordDetector = None,
         merge_request_threshold: float = 0.0,
         merge_request_prefix: str = "$Previous user's request and your response have been canceled. Please respond again to the following request:\n\n",
         # Japanese version
@@ -123,6 +125,13 @@ class STSPipeline:
 
         @self.vad.on_speech_detected
         async def on_speech_detected(data: bytes, text: str, metadata: dict, recorded_duration: float, session_id: str):
+            request_metadata = metadata or {}
+            audio_wakeword = self.vad.get_session_data(session_id, "audio_wakeword")
+            if audio_wakeword:
+                request_metadata = {
+                    **request_metadata,
+                    "audio_wakeword": audio_wakeword,
+                }
             async for response in self.invoke(STSRequest(
                 session_id=session_id,
                 user_id=self.vad.get_session_data(session_id, "user_id"),
@@ -131,7 +140,8 @@ class STSPipeline:
                 text=text,
                 audio_data=data,
                 audio_duration=recorded_duration,
-                system_prompt_params=self.vad.get_session_data(session_id, "system_prompt_params")
+                system_prompt_params=self.vad.get_session_data(session_id, "system_prompt_params"),
+                metadata=request_metadata,
             )):
                 if response.type == "start":
                     self.vad.set_session_data(session_id, "context_id", response.context_id)
@@ -176,6 +186,7 @@ class STSPipeline:
         # Wakeword
         self.wakewords = wakewords
         self.wakeword_timeout = wakeword_timeout
+        self.audio_wakeword_detector = audio_wakeword_detector
 
         # Merge consecutive requests
         self.merge_request_threshold = merge_request_threshold
@@ -242,6 +253,9 @@ class STSPipeline:
         return {
             "wakewords": self.wakewords,
             "wakeword_timeout": self.wakeword_timeout,
+            "audio_wakeword_detector": self.audio_wakeword_detector.get_config()
+            if self.audio_wakeword_detector
+            else None,
             "merge_request_threshold": self.merge_request_threshold,
             "merge_request_prefix": self.merge_request_prefix,
             "timestamp_interval_seconds": self.timestamp_interval_seconds,
@@ -315,8 +329,9 @@ class STSPipeline:
 
     def get_wakeword_decision(self, request: STSRequest, last_request_at: datetime) -> dict:
         now = datetime.now(timezone.utc)
+        audio_decision = self._get_audio_wakeword_decision(request)
 
-        if not self.wakewords:
+        if not self.wakewords and not audio_decision:
             return {
                 "enabled": False,
                 "accepted": True,
@@ -331,8 +346,11 @@ class STSPipeline:
                 "timeout": self.wakeword_timeout,
             }
 
+        if audio_decision and audio_decision.get("accepted"):
+            return audio_decision
+
         text = request.text or ""
-        for ww in self.wakewords:
+        for ww in self.wakewords or []:
             if ww in text:
                 logger.info(f"Wake by '{ww}': {request.text}")
                 return {
@@ -342,11 +360,60 @@ class STSPipeline:
                     "matched_wakeword": ww,
                 }
 
+        if audio_decision:
+            return audio_decision
+
         return {
             "enabled": True,
             "accepted": False,
             "reason": "not_detected",
         }
+
+    def _get_audio_wakeword_decision(self, request: STSRequest) -> Optional[dict]:
+        metadata = request.metadata or {}
+        audio_wakeword = metadata.get("audio_wakeword")
+        if not isinstance(audio_wakeword, dict):
+            return None
+
+        decision = {
+            **audio_wakeword,
+            "enabled": True,
+            "source": "audio",
+        }
+        if not decision.get("accepted"):
+            decision["accepted"] = False
+            decision.setdefault("reason", "not_detected")
+            return decision
+
+        expires_at = decision.get("expires_at")
+        if expires_at is not None:
+            try:
+                if monotonic() > float(expires_at):
+                    return {
+                        **decision,
+                        "accepted": False,
+                        "reason": "audio_expired",
+                    }
+            except Exception:
+                pass
+        decision.setdefault("reason", "matched")
+        return decision
+
+    def _detect_audio_wakeword(self, request: STSRequest, sample_rate: int):
+        if not self.audio_wakeword_detector or not request.audio_data:
+            return
+
+        detection = self.audio_wakeword_detector.process(
+            request.audio_data,
+            sample_rate=sample_rate,
+            session_id=request.session_id,
+        )
+        request.metadata = request.metadata or {}
+        request.metadata["audio_wakeword"] = (
+            detection.to_dict()
+            if detection
+            else self.audio_wakeword_detector.initial_decision().to_dict()
+        )
 
     def _metadata_with_request(self, request: STSRequest, metadata: dict = None) -> dict:
         return {
@@ -601,6 +668,8 @@ class STSPipeline:
             else:
                 request.text = recognized_text
 
+            self._detect_audio_wakeword(request, audio_sample_rate)
+
             # Get session state before gates that need conversation recency.
             state = await self.session_state_manager.get_session_state(request.session_id)
             now = datetime.now(timezone.utc)
@@ -753,6 +822,7 @@ class STSPipeline:
                         "block_barge_in": request.block_barge_in,
                         **({"audio_enhancement": request.metadata["audio_enhancement"]} if request.metadata and "audio_enhancement" in request.metadata else {}),
                         **({"voice_auth": request.metadata["voice_auth"]} if request.metadata and "voice_auth" in request.metadata else {}),
+                        **({"wakeword": request.metadata["wakeword"]} if request.metadata and "wakeword" in request.metadata else {}),
                         **({"addressing": request.metadata["addressing"]} if request.metadata and "addressing" in request.metadata else {}),
                     }
                 )))
