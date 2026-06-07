@@ -158,6 +158,20 @@ STT_CONTEXT=Hermes AIAvatarKit StackChan
 
 任意の既存Whisper互換サーバーを使う場合は `STT_PROVIDER=whisper_compatible` のまま `STT_BASE_URL` をそのサーバーに向けます。この場合 `provider/start.sh` はSTT runtimeを起動しません。
 
+WhisperKit CLI を provider runtime として管理する場合は、`STT_PROVIDER=whisper_compatible` のまま `STT_WHISPERKIT_ENABLED=true` を追加します。`whisperkit-cli` は Homebrew などでホスト側にインストールしておきます。
+
+```env
+STT_PROVIDER=whisper_compatible
+STT_BASE_URL=http://host.docker.internal:5003/v1
+STT_MODEL=whisper-large-v3
+STT_LANGUAGE=ja
+STT_WHISPERKIT_ENABLED=true
+STT_WHISPERKIT_PORT=5003
+STT_WHISPERKIT_MODEL_PATH=/path/to/openai_whisper-large-v3-v20240930_turbo
+```
+
+既存のCoreMLモデルディレクトリを使わず、WhisperKit CLI にモデルをダウンロードさせる場合は `STT_WHISPERKIT_MODEL_PATH` の代わりに `STT_WHISPERKIT_MODEL` を指定します。
+
 ### VAD Provider
 
 VAD は `.env` の `VAD_PROVIDER` で切り替えます。`silero_stream` または `silero` で Silero、`tenvad` でホスト側 TenVAD runtime を使います。TenVAD は Docker コンテナ内で native module を直接ロードせず、`provider/start.sh` で起動した runtime を HTTP 経由で呼びます。
@@ -262,7 +276,7 @@ Docker で会話サーバーや登録サーバーを動かす場合、MLX/Metal 
 provider/start.sh
 ```
 
-runtime は voice auth がデフォルトで `0.0.0.0:8765`、Qwen3-ASR が `0.0.0.0:8766`、TenVAD が `0.0.0.0:8767` に起動します。Docker 側からは `http://host.docker.internal:<port>` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。ログはデフォルトで `.provider/logs/` に追記されます。
+runtime は WhisperKit がデフォルトで `0.0.0.0:5003`、voice auth が `0.0.0.0:8765`、Qwen3-ASR が `0.0.0.0:8766`、TenVAD が `0.0.0.0:8767` に起動します。Docker 側からは `http://host.docker.internal:<port>` で呼び出します。Docker Compose 単体ではホスト上のruntimeプロセスを安全に起動/停止できないため、登録サーバーや会話サーバーを起動する前に別ターミナルで起動してください。ログはデフォルトで `.provider/logs/` に追記されます。
 
 ```sh
 provider/start.sh

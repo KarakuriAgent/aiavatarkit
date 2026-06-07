@@ -61,6 +61,7 @@ provider_load_env() {
   : "${PROVIDER_START_TIMEOUT:=90}"
   : "${PROVIDER_STOP_TIMEOUT:=15}"
   : "${STT_RUNTIME_PORT:=8766}"
+  : "${STT_WHISPERKIT_PORT:=5003}"
   : "${VOICE_AUTH_RUNTIME_PORT:=8765}"
   : "${VAD_RUNTIME_PORT:=8767}"
 
@@ -69,6 +70,7 @@ provider_load_env() {
   export PROVIDER_START_TIMEOUT
   export PROVIDER_STOP_TIMEOUT
   export STT_RUNTIME_PORT
+  export STT_WHISPERKIT_PORT
   export VOICE_AUTH_RUNTIME_PORT
   export VAD_RUNTIME_PORT
 }
@@ -82,6 +84,10 @@ provider_enabled_runtimes() {
     echo "stt/qwen3_asr_mlx"
   fi
 
+  if [ "${STT_PROVIDER:-}" = "whisper_compatible" ] && provider_bool_enabled "${STT_WHISPERKIT_ENABLED:-false}"; then
+    echo "stt/whisperkit"
+  fi
+
   if provider_bool_enabled "${VOICE_AUTH_ENABLED:-false}" && [ "${VOICE_AUTH_PROVIDER:-}" = "wespeaker_mlx" ]; then
     echo "voice_auth/wespeaker_mlx"
   fi
@@ -90,6 +96,7 @@ provider_enabled_runtimes() {
 provider_known_runtimes() {
   echo "vad/tenvad"
   echo "stt/qwen3_asr_mlx"
+  echo "stt/whisperkit"
   echo "voice_auth/wespeaker_mlx"
 }
 
@@ -108,6 +115,7 @@ provider_runtime_config() {
       PROVIDER_RUNTIME_API_KEY="${VAD_API_KEY:-${AIAVATAR_API_KEY:-}}"
       PROVIDER_RUNTIME_PROCESS_MATCH="tenvad-runtime"
       PROVIDER_RUNTIME_PRESTART=""
+      PROVIDER_RUNTIME_PROCESS_TYPE=""
       ;;
     stt/qwen3_asr_mlx)
       PROVIDER_RUNTIME_NAME="qwen3_asr_mlx"
@@ -120,6 +128,20 @@ provider_runtime_config() {
       PROVIDER_RUNTIME_API_KEY="${STT_API_KEY:-${AIAVATAR_API_KEY:-}}"
       PROVIDER_RUNTIME_PROCESS_MATCH="qwen3-asr-mlx-runtime"
       PROVIDER_RUNTIME_PRESTART="qwen3_asr_mlx"
+      PROVIDER_RUNTIME_PROCESS_TYPE=""
+      ;;
+    stt/whisperkit)
+      PROVIDER_RUNTIME_NAME="whisperkit"
+      PROVIDER_RUNTIME_TITLE="WhisperKit STT"
+      PROVIDER_RUNTIME_COMMAND="${WHISPERKIT_RUNTIME_COMMAND:-${STT_WHISPERKIT_RUNTIME_COMMAND:-$PROVIDER_REPO_ROOT/provider/stt/whisperkit/server.sh}}"
+      PROVIDER_RUNTIME_EXTRA=""
+      PROVIDER_RUNTIME_PID_FILE="$PROVIDER_STATE_DIR/whisperkit.pid"
+      PROVIDER_RUNTIME_LOG_FILE="$PROVIDER_LOG_DIR/whisperkit.log"
+      PROVIDER_RUNTIME_HEALTH_URL="${STT_WHISPERKIT_HEALTH_URL:-http://127.0.0.1:$STT_WHISPERKIT_PORT/health}"
+      PROVIDER_RUNTIME_API_KEY=""
+      PROVIDER_RUNTIME_PROCESS_MATCH="whisperkit-cli"
+      PROVIDER_RUNTIME_PRESTART=""
+      PROVIDER_RUNTIME_PROCESS_TYPE="Interactive"
       ;;
     voice_auth/wespeaker_mlx)
       PROVIDER_RUNTIME_NAME="wespeaker_mlx"
@@ -132,6 +154,7 @@ provider_runtime_config() {
       PROVIDER_RUNTIME_API_KEY="${VOICE_AUTH_API_KEY:-${AIAVATAR_API_KEY:-}}"
       PROVIDER_RUNTIME_PROCESS_MATCH="wespeaker-mlx-runtime"
       PROVIDER_RUNTIME_PRESTART=""
+      PROVIDER_RUNTIME_PROCESS_TYPE=""
       ;;
     *)
       echo "Unsupported provider runtime: $runtime" >&2
@@ -149,6 +172,7 @@ provider_runtime_config() {
   export PROVIDER_RUNTIME_API_KEY
   export PROVIDER_RUNTIME_PROCESS_MATCH
   export PROVIDER_RUNTIME_PRESTART
+  export PROVIDER_RUNTIME_PROCESS_TYPE
 }
 
 provider_runtime_pid() {
@@ -210,7 +234,11 @@ provider_shell_quote() {
 }
 
 provider_launchd_enabled() {
-  [ "${PROVIDER_LAUNCH_METHOD:-auto}" != "nohup" ] || return 1
+  case "${PROVIDER_LAUNCH_METHOD:-auto}" in
+    nohup|screen)
+      return 1
+      ;;
+  esac
   [ "$(uname -s)" = "Darwin" ] || return 1
   command -v launchctl >/dev/null 2>&1
 }
@@ -237,10 +265,13 @@ provider_launchd_plist_file() {
 
 provider_launchd_write_files() {
   local runtime="$1"
-  local launcher plist label
+  local launcher plist label home path process_type
   launcher="$(provider_launchd_launcher_file)"
   plist="$(provider_launchd_plist_file)"
   label="$(provider_launchd_label)"
+  home="${HOME:-}"
+  path="${PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+  process_type="${PROVIDER_RUNTIME_PROCESS_TYPE:-}"
 
   mkdir -p "$(dirname "$launcher")"
 
@@ -274,9 +305,23 @@ EOF
   <string>$(provider_xml_escape "$PROVIDER_RUNTIME_LOG_FILE")</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key>
+    <string>$(provider_xml_escape "$home")</string>
+    <key>PATH</key>
+    <string>$(provider_xml_escape "$path")</string>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
   </dict>
+EOF
+
+  if [ -n "$process_type" ]; then
+    cat >> "$plist" <<EOF
+  <key>ProcessType</key>
+  <string>$(provider_xml_escape "$process_type")</string>
+EOF
+  fi
+
+  cat >> "$plist" <<EOF
   <key>RunAtLoad</key>
   <true/>
 </dict>
@@ -321,6 +366,50 @@ provider_launchd_stop_runtime() {
   launchctl bootout "$(provider_launchd_service)" >/dev/null 2>&1
 }
 
+provider_screen_enabled() {
+  [ "${PROVIDER_LAUNCH_METHOD:-auto}" = "screen" ] || return 1
+  command -v screen >/dev/null 2>&1
+}
+
+provider_screen_session_name() {
+  printf 'aiavatarkit.%s' "$PROVIDER_RUNTIME_NAME"
+}
+
+provider_screen_launcher_file() {
+  printf '%s/launchers/%s-screen.sh' "$PROVIDER_STATE_DIR" "$PROVIDER_RUNTIME_NAME"
+}
+
+provider_screen_write_launcher() {
+  local runtime="$1"
+  local launcher
+  launcher="$(provider_screen_launcher_file)"
+  mkdir -p "$(dirname "$launcher")"
+
+  cat > "$launcher" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd $(provider_shell_quote "$PROVIDER_REPO_ROOT")
+. $(provider_shell_quote "$PROVIDER_SCRIPT_DIR/common.sh")
+provider_load_env
+provider_runtime_config $(provider_shell_quote "$runtime")
+echo "\$\$" > "\$PROVIDER_RUNTIME_PID_FILE"
+exec "\$PROVIDER_RUNTIME_COMMAND"
+EOF
+  chmod +x "$launcher"
+}
+
+provider_screen_start_runtime() {
+  local runtime="$1"
+  provider_screen_write_launcher "$runtime"
+  screen -S "$(provider_screen_session_name)" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$(provider_screen_session_name)" "$(provider_screen_launcher_file)"
+}
+
+provider_screen_stop_runtime() {
+  provider_screen_enabled || return 1
+  screen -S "$(provider_screen_session_name)" -X quit >/dev/null 2>&1
+}
+
 provider_sync_enabled_extras() {
   local extras="" runtime extra
   local runtime_seen=0
@@ -349,7 +438,11 @@ provider_sync_enabled_extras() {
   done
 
   cd "$PROVIDER_REPO_ROOT"
-  uv sync --frozen "${args[@]}"
+  if [ -n "$extras" ]; then
+    uv sync --frozen "${args[@]}"
+  else
+    uv sync --frozen
+  fi
 }
 
 provider_runtime_prestart() {
@@ -396,6 +489,8 @@ provider_start_runtime() {
   cd "$PROVIDER_REPO_ROOT"
   if provider_launchd_enabled; then
     provider_launchd_start_runtime "$runtime"
+  elif provider_screen_enabled; then
+    provider_screen_start_runtime "$runtime"
   else
     PYTHONUNBUFFERED=1 nohup "$PROVIDER_RUNTIME_COMMAND" >> "$PROVIDER_RUNTIME_LOG_FILE" 2>&1 </dev/null &
     echo "$!" > "$PROVIDER_RUNTIME_PID_FILE"
@@ -474,6 +569,14 @@ provider_stop_runtime() {
   if provider_launchd_is_loaded; then
     echo "stopping $PROVIDER_RUNTIME_NAME: $(provider_launchd_service)"
     provider_launchd_stop_runtime
+    rm -f "$PROVIDER_RUNTIME_PID_FILE"
+    echo "$PROVIDER_RUNTIME_NAME stopped"
+    return 0
+  fi
+
+  if provider_screen_enabled && [ -n "$pid" ]; then
+    echo "stopping $PROVIDER_RUNTIME_NAME: screen $(provider_screen_session_name)"
+    provider_screen_stop_runtime || true
     rm -f "$PROVIDER_RUNTIME_PID_FILE"
     echo "$PROVIDER_RUNTIME_NAME stopped"
     return 0
