@@ -27,6 +27,7 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
         base_url: str,
         api_key: str,
         model: str,
+        api_format: str = "chat_completions",
         target_names: List[str],
         primary_name: str = None,
         timeout: float = 10.0,
@@ -39,6 +40,7 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.api_format = api_format
         self.target_names = target_names
         self.primary_name = primary_name or target_names[0]
         self.timeout = timeout
@@ -64,7 +66,7 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
 
         try:
             resp = await self.http_client.post(
-                f"{self.base_url}/chat/completions",
+                self._endpoint_url(),
                 headers=self._headers(),
                 json=self._request_body(
                     text=text,
@@ -73,7 +75,10 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
                 ),
             )
             resp.raise_for_status()
-            decision = self._parse_response(resp.json())
+            if self.api_format == "responses" and resp.headers.get("content-type", "").startswith("text/event-stream"):
+                decision = self._parse_response({"output_text": self._extract_sse_text(resp.text)})
+            else:
+                decision = self._parse_response(resp.json())
             return self._apply_confidence_threshold(decision)
 
         except Exception as ex:
@@ -101,6 +106,11 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _endpoint_url(self) -> str:
+        if self.api_format == "responses":
+            return f"{self.base_url}/responses"
+        return f"{self.base_url}/chat/completions"
+
     def _request_body(
         self,
         *,
@@ -108,15 +118,44 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
         recent_history: List[Dict[str, Any]],
         seconds_since_last_assistant_turn: Optional[float],
     ) -> Dict[str, Any]:
+        system_prompt = self._system_prompt(
+            recent_history=recent_history,
+            seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
+        )
+        schema = self._json_schema()
+        if self.api_format == "responses":
+            return {
+                "model": self.model,
+                "instructions": system_prompt,
+                "store": False,
+                "stream": True,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": text,
+                            }
+                        ],
+                    },
+                ],
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "addressing_decision",
+                        "strict": True,
+                        "schema": schema,
+                    }
+                },
+            }
+
         return {
             "model": self.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": self._system_prompt(
-                        recent_history=recent_history,
-                        seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
-                    ),
+                    "content": system_prompt,
                 },
                 {
                     "role": "user",
@@ -129,28 +168,31 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
                 "json_schema": {
                     "name": "addressing_decision",
                     "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "accepted": {"type": "boolean"},
-                            "reason": {
-                                "type": "string",
-                                "enum": REASONS,
-                            },
-                            "confidence": {
-                                "type": "number",
-                                "minimum": 0,
-                                "maximum": 1,
-                            },
-                            "explanation": {
-                                "type": "string",
-                            },
-                        },
-                        "required": ["accepted", "reason", "confidence", "explanation"],
-                    },
+                    "schema": schema,
                 },
             },
+        }
+
+    def _json_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "accepted": {"type": "boolean"},
+                "reason": {
+                    "type": "string",
+                    "enum": REASONS,
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                },
+                "explanation": {
+                    "type": "string",
+                },
+            },
+            "required": ["accepted", "reason", "confidence", "explanation"],
         }
 
     def _system_prompt(
@@ -239,7 +281,10 @@ Decision rules:
         return ""
 
     def _parse_response(self, payload: Dict[str, Any]) -> AddressingDecision:
-        content = payload["choices"][0]["message"]["content"]
+        if self.api_format == "responses":
+            content = self._extract_responses_text(payload)
+        else:
+            content = payload["choices"][0]["message"]["content"]
         if isinstance(content, list):
             content = "".join(
                 part.get("text", "")
@@ -253,6 +298,61 @@ Decision rules:
             confidence=float(data["confidence"]),
             explanation=str(data.get("explanation") or ""),
         )
+
+    def _extract_responses_text(self, payload: Dict[str, Any]) -> str:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text:
+            return output_text
+
+        parts = []
+        for item in payload.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            for content in item.get("content") or []:
+                if not isinstance(content, dict):
+                    continue
+                text = content.get("text") or content.get("output_text")
+                if text:
+                    parts.append(str(text))
+        if parts:
+            return "".join(parts)
+
+        raise KeyError("output_text")
+
+    def _extract_sse_text(self, content: str) -> str:
+        parts = []
+        done_text = None
+        completed_response = None
+        for line in content.splitlines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            event = json.loads(data)
+            if "error" in event:
+                raise RuntimeError(str(event["error"]))
+            event_type = event.get("type")
+            if event_type == "response.completed" and isinstance(event.get("response"), dict):
+                completed_response = event["response"]
+                continue
+            if event_type == "response.output_text.delta":
+                delta = event.get("delta")
+                if isinstance(delta, str):
+                    parts.append(delta)
+                continue
+            if event_type == "response.output_text.done":
+                text = event.get("text")
+                if isinstance(text, str):
+                    done_text = text
+
+        if parts:
+            return "".join(parts)
+        if done_text:
+            return done_text
+        if completed_response:
+            return self._extract_responses_text(completed_response)
+        raise KeyError("output_text")
 
     def _apply_confidence_threshold(self, decision: AddressingDecision) -> AddressingDecision:
         if (
@@ -269,6 +369,7 @@ Decision rules:
         return {
             "base_url": self.base_url,
             "model": self.model,
+            "api_format": self.api_format,
             "target_names": self.target_names,
             "primary_name": self.primary_name,
             "timeout": self.timeout,

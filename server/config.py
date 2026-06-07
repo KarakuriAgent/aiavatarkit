@@ -138,6 +138,7 @@ class Settings:
     addressing_base_url: str | None
     addressing_api_key: str | None
     addressing_model: str | None
+    addressing_api_format: str
     addressing_target_names: List[str]
     addressing_primary_name: str | None
     addressing_history_limit: int
@@ -293,6 +294,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         addressing_base_url=optional_env("ADDRESSING_BASE_URL"),
         addressing_api_key=optional_env("ADDRESSING_API_KEY"),
         addressing_model=optional_env("ADDRESSING_MODEL"),
+        addressing_api_format=os.environ.get("ADDRESSING_API_FORMAT", "chat_completions"),
         addressing_target_names=list_env("ADDRESSING_TARGET_NAMES"),
         addressing_primary_name=optional_env("ADDRESSING_PRIMARY_NAME"),
         addressing_history_limit=int(os.environ.get("ADDRESSING_HISTORY_LIMIT", "12")),

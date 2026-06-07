@@ -84,3 +84,117 @@ async def test_parse_response_includes_explanation():
         assert decision.explanation == "The utterance explicitly calls カノン by name."
     finally:
         await detector.close()
+
+
+@pytest.mark.asyncio
+async def test_responses_request_body_uses_text_format_schema():
+    detector = OpenAICompatibleChatAddressingDetector(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="test-model",
+        api_format="responses",
+        target_names=["カノン"],
+    )
+
+    try:
+        body = detector._request_body(
+            text="カノン、聞こえる?",
+            recent_history=[],
+            seconds_since_last_assistant_turn=None,
+        )
+
+        assert body["model"] == "test-model"
+        assert body["store"] is False
+        assert body["stream"] is True
+        assert "You are カノン." in body["instructions"]
+        assert body["input"] == [{
+            "role": "user",
+            "content": [{"type": "input_text", "text": "カノン、聞こえる?"}],
+        }]
+        assert body["text"]["format"]["type"] == "json_schema"
+        assert body["text"]["format"]["name"] == "addressing_decision"
+        assert body["text"]["format"]["schema"]["properties"]["reason"]["enum"]
+    finally:
+        await detector.close()
+
+
+@pytest.mark.asyncio
+async def test_parse_responses_sse_output_text_deltas():
+    detector = OpenAICompatibleChatAddressingDetector(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="test-model",
+        api_format="responses",
+        target_names=["カノン"],
+    )
+
+    try:
+        content = "\n\n".join([
+            'data: {"type":"response.output_text.delta","delta":"{\\"accepted\\":true,"}',
+            'data: {"type":"response.output_text.delta","delta":"\\"reason\\":\\"called_by_name\\",\\"confidence\\":1,\\"explanation\\":\\"Called by name.\\"}"}',
+            "data: [DONE]",
+        ])
+        text = detector._extract_sse_text(content)
+        decision = detector._parse_response({"output_text": text})
+
+        assert decision.accepted is True
+        assert decision.reason == "called_by_name"
+        assert decision.confidence == 1
+    finally:
+        await detector.close()
+
+
+@pytest.mark.asyncio
+async def test_parse_responses_sse_does_not_duplicate_done_text():
+    detector = OpenAICompatibleChatAddressingDetector(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="test-model",
+        api_format="responses",
+        target_names=["カノン"],
+    )
+
+    try:
+        expected = json.dumps({
+            "accepted": True,
+            "reason": "called_by_name",
+            "confidence": 1,
+            "explanation": "Called by name.",
+        })
+        content = "\n\n".join([
+            f"data: {json.dumps({'type': 'response.output_text.delta', 'delta': expected})}",
+            f"data: {json.dumps({'type': 'response.output_text.done', 'text': expected})}",
+            "data: [DONE]",
+        ])
+
+        assert detector._extract_sse_text(content) == expected
+    finally:
+        await detector.close()
+
+
+@pytest.mark.asyncio
+async def test_parse_responses_output_text():
+    detector = OpenAICompatibleChatAddressingDetector(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="test-model",
+        api_format="responses",
+        target_names=["カノン"],
+    )
+
+    try:
+        decision = detector._parse_response({
+            "output_text": json.dumps({
+                "accepted": False,
+                "reason": "not_addressed",
+                "confidence": 0.93,
+                "explanation": "The utterance does not address カノン.",
+            })
+        })
+
+        assert decision.accepted is False
+        assert decision.reason == "not_addressed"
+        assert decision.confidence == 0.93
+        assert decision.explanation == "The utterance does not address カノン."
+    finally:
+        await detector.close()

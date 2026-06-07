@@ -32,6 +32,7 @@ def create_addressing_detector(settings: Settings):
             else settings.hermes_api_key
         ),
         model=settings.addressing_model or settings.hermes_model,
+        api_format=settings.addressing_api_format,
         target_names=target_names,
         primary_name=settings.addressing_primary_name,
         timeout=settings.addressing_timeout,
