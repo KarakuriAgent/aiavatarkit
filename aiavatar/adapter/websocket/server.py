@@ -4,6 +4,7 @@ import io
 import logging
 import re
 import wave
+from time import time
 from typing import List, Dict, Callable, Awaitable, Optional
 from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketException, status
 from ...database import PoolProvider
@@ -327,10 +328,22 @@ class AIAvatarWebSocketServer(Adapter):
         elif request.type == "data":
             audio_data = base64.b64decode(request.audio_data)
             if self.pre_vad_audio_processor:
+                pre_vad_started_at = time()
                 audio_data = self.pre_vad_audio_processor.process(
                     audio_data,
                     sample_rate=self.sts.vad.sample_rate,
                     session_id=request.session_id,
+                )
+                elapsed = time() - pre_vad_started_at
+                current = self.sts.vad.get_session_data(
+                    request.session_id,
+                    "_pre_vad_audio_processor_time",
+                ) or 0
+                self.sts.vad.set_session_data(
+                    request.session_id,
+                    "_pre_vad_audio_processor_time",
+                    current + elapsed,
+                    create_session=True,
                 )
                 if not audio_data:
                     return

@@ -5,7 +5,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 VALID_PERIODS = {"1h", "6h", "24h", "7d", "30d"}
@@ -18,6 +18,31 @@ INTERVAL_SECONDS = {
     "1h": 3600,
     "1d": 86400,
 }
+
+TIMING_COLUMN_NAMES = [
+    "pre_vad_audio_processor_time",
+    "vad_final_stt_time",
+    "vad_segment_stt_time",
+    "vad_silence_time",
+    "vad_callback_to_pipeline_time",
+    "debug_request_audio_save_time",
+    "audio_enhancement_time",
+    "voice_auth_time",
+    "request_voice_record_time",
+    "stt_recognition_time",
+    "audio_wakeword_time",
+    "session_context_time",
+    "wakeword_decision_time",
+    "addressing_context_time",
+    "addressing_detection_time",
+    "validate_request_time",
+    "merge_request_time",
+    "context_prepare_time",
+    "accepted_notify_time",
+    "stop_response_phase_time",
+    "pre_llm_handler_time",
+    "llm_request_start_time",
+]
 
 
 def parse_period(period: str) -> timedelta:
@@ -213,6 +238,7 @@ class ConversationLog:
     response_voice_text: Optional[str] = None
     error_info: Optional[str] = None
     tool_calls: Optional[str] = None
+    performance_timings: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -229,9 +255,10 @@ WHERE created_at >= ?
 ORDER BY created_at
 """
 
-_LOGS_SQL = """
+_LOGS_SQL = f"""
 SELECT created_at, transaction_id, user_id, context_id, tts_first_chunk_time, before_llm_time, quick_response_text,
-       request_text, request_files, response_text, response_voice_text, error_info, tool_calls
+       request_text, request_files, response_text, response_voice_text, error_info, tool_calls,
+       {", ".join(TIMING_COLUMN_NAMES)}
 FROM performance_records
 ORDER BY created_at DESC
 LIMIT ?
@@ -260,6 +287,11 @@ def _group_logs(rows) -> List[ConversationGroup]:
             created_at = created_at.strftime("%Y-%m-%dT%H:%M:%S")
         elif isinstance(created_at, str):
             pass  # already string
+        timing_start_index = 13
+        performance_timings = {
+            column: row[timing_start_index + index]
+            for index, column in enumerate(TIMING_COLUMN_NAMES)
+        }
         logs.append(ConversationLog(
             created_at=created_at,
             transaction_id=row[1],
@@ -274,6 +306,7 @@ def _group_logs(rows) -> List[ConversationGroup]:
             response_voice_text=row[10],
             error_info=row[11],
             tool_calls=row[12],
+            performance_timings=performance_timings,
         ))
 
     # Group by context_id, preserving order of first appearance
@@ -392,9 +425,11 @@ class PostgreSQLMetricsQuery(MetricsQuery):
 
     async def _fetch_logs(self, limit: int):
         pool = await self._get_pool()
-        query = """
+        timing_columns = ", ".join(TIMING_COLUMN_NAMES)
+        query = f"""
         SELECT created_at, transaction_id, user_id, context_id, tts_first_chunk_time, before_llm_time, quick_response_text,
-               request_text, request_files, response_text, response_voice_text, error_info, tool_calls
+               request_text, request_files, response_text, response_voice_text, error_info, tool_calls,
+               {timing_columns}
         FROM performance_records
         ORDER BY created_at DESC
         LIMIT $1
@@ -404,7 +439,8 @@ class PostgreSQLMetricsQuery(MetricsQuery):
         return [(r["created_at"], r["transaction_id"], r["user_id"], r["context_id"],
                  r["tts_first_chunk_time"], r["before_llm_time"], r["quick_response_text"],
                  r["request_text"], r["request_files"],
-                 r["response_text"], r["response_voice_text"], r["error_info"], r["tool_calls"]) for r in records]
+                 r["response_text"], r["response_voice_text"], r["error_info"], r["tool_calls"],
+                 *(r[column] for column in TIMING_COLUMN_NAMES)) for r in records]
 
     async def query_timeline(self, period: str, interval: str) -> List[TimelineBucket]:
         if interval not in VALID_INTERVALS:

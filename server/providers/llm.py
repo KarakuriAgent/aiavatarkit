@@ -1,5 +1,6 @@
 import json
 from logging import getLogger
+from time import time
 from typing import AsyncGenerator, Dict, List
 
 import httpx
@@ -79,6 +80,7 @@ class HermesResponsesService(LLMService):
         inline_llm_params: Dict[str, any] = None,
         session_id: str = None,
         channel: str = None,
+        request_start_callback=None,
     ) -> AsyncGenerator[LLMResponse, None]:
         request_body = {
             "model": self.model,
@@ -108,6 +110,8 @@ class HermesResponsesService(LLMService):
         }
 
         try:
+            if request_start_callback:
+                request_start_callback(time())
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
                     "POST",

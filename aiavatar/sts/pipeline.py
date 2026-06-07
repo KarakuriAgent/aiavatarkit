@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
 import logging
+import inspect
 import re
 from time import monotonic, time
 import traceback
@@ -126,6 +127,20 @@ class STSPipeline:
         @self.vad.on_speech_detected
         async def on_speech_detected(data: bytes, text: str, metadata: dict, recorded_duration: float, session_id: str):
             request_metadata = metadata or {}
+            pre_vad_audio_processor_time = self.vad.get_session_data(
+                session_id,
+                "_pre_vad_audio_processor_time",
+            )
+            if pre_vad_audio_processor_time:
+                request_metadata = {
+                    **request_metadata,
+                    "_pre_vad_audio_processor_time": pre_vad_audio_processor_time,
+                }
+                self.vad.set_session_data(
+                    session_id,
+                    "_pre_vad_audio_processor_time",
+                    0,
+                )
             audio_wakeword = self.vad.get_session_data(session_id, "audio_wakeword")
             if audio_wakeword:
                 request_metadata = {
@@ -421,6 +436,57 @@ class STSPipeline:
             **(metadata or {}),
         }
 
+    def _apply_pre_pipeline_timings(
+        self,
+        request: STSRequest,
+        performance: PerformanceRecord,
+        start_time: float,
+    ):
+        metadata = request.metadata or {}
+        timing_fields = {
+            "_pre_vad_audio_processor_time": "pre_vad_audio_processor_time",
+            "_vad_final_stt_time": "vad_final_stt_time",
+            "_vad_segment_stt_time": "vad_segment_stt_time",
+            "_vad_silence_time": "vad_silence_time",
+        }
+        for metadata_key, record_attr in timing_fields.items():
+            value = metadata.pop(metadata_key, None)
+            if value is None:
+                continue
+            try:
+                setattr(performance, record_attr, float(value))
+            except (TypeError, ValueError):
+                continue
+
+        detected_at = metadata.pop("_vad_detected_wall_time", None)
+        if detected_at is not None:
+            try:
+                performance.vad_callback_to_pipeline_time = max(
+                    0,
+                    start_time - float(detected_at),
+                )
+            except (TypeError, ValueError):
+                pass
+
+    def _record_performance(
+        self,
+        performance: Optional[PerformanceRecord],
+        start_time: float,
+        *,
+        filter_reason: str = None,
+        error_info: dict = None,
+    ):
+        if not performance:
+            return
+        if not performance.total_time:
+            performance.total_time = time() - start_time
+        if filter_reason or error_info:
+            payload = dict(error_info or {})
+            if filter_reason:
+                payload["filter_reason"] = filter_reason
+            performance.error_info = json.dumps(payload, ensure_ascii=False, default=str)
+        self.performance_recorder.record(performance)
+
     async def _save_debug_request_audio(self, transaction_id: str, audio_data: bytes) -> Optional[dict]:
         if not self.debug_report_enabled or not audio_data:
             return None
@@ -509,15 +575,27 @@ class STSPipeline:
 
     async def _invoke_direct(self, request: STSRequest) -> AsyncGenerator[STSResponse, None]:
         performance = None
+        start_time = time()
+        transaction_id = None
         try:
             if not request.session_id:
                 raise ValueError("session_id is required but not provided")
 
-            start_time = time()
             transaction_id = str(uuid4())
             suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
             audio_sample_rate = self._request_audio_sample_rate()
+            performance = PerformanceRecord(
+                transaction_id=transaction_id,
+                user_id=request.user_id,
+                stt_name=self.stt.__class__.__name__,
+                llm_name=self.llm.__class__.__name__,
+                tts_name=self.tts.__class__.__name__
+            )
+            self._apply_pre_pipeline_timings(request, performance, start_time)
+
+            phase_started_at = time()
             debug_request_audio = await self._save_debug_request_audio(transaction_id, request.audio_data)
+            performance.debug_request_audio_save_time = time() - phase_started_at
             if debug_request_audio:
                 request.metadata = request.metadata or {}
                 request.metadata["debug_request_audio"] = debug_request_audio
@@ -525,17 +603,21 @@ class STSPipeline:
             if self.audio_enhancer and request.audio_data:
                 request.metadata = request.metadata or {}
                 if self.voice_recorder_enabled and self.audio_enhancement_record_raw:
+                    phase_started_at = time()
                     await self.voice_recorder.record(RequestVoice(
                         transaction_id,
                         request.audio_data,
                         suffix="request_raw",
                     ))
+                    performance.request_voice_record_time += time() - phase_started_at
                 try:
+                    phase_started_at = time()
                     enhancement_result = await self.audio_enhancer.enhance(
                         audio_bytes=request.audio_data,
                         sample_rate=audio_sample_rate,
                         session_id=request.session_id,
                     )
+                    performance.audio_enhancement_time = time() - phase_started_at
                     request.audio_data = enhancement_result.audio_bytes
                     request.metadata["audio_enhancement"] = {
                         "enabled": True,
@@ -543,12 +625,15 @@ class STSPipeline:
                         **enhancement_result.to_dict(),
                     }
                     if self.voice_recorder_enabled and self.audio_enhancement_record_enhanced:
+                        phase_started_at = time()
                         await self.voice_recorder.record(RequestVoice(
                             transaction_id,
                             request.audio_data,
                             suffix="request_enhanced",
                         ))
+                        performance.request_voice_record_time += time() - phase_started_at
                 except Exception as ex:
+                    performance.audio_enhancement_time = time() - phase_started_at
                     request.metadata["audio_enhancement"] = {
                         "enabled": True,
                         "applied": False,
@@ -558,6 +643,11 @@ class STSPipeline:
                     }
                     logger.warning("Audio enhancement failed: %s", ex, exc_info=self.debug)
                     if not self.audio_enhancement_fail_open:
+                        self._record_performance(
+                            performance,
+                            start_time,
+                            filter_reason="audio_enhancement_failed",
+                        )
                         yield STSResponse(
                             type="canceled",
                             session_id=request.session_id,
@@ -573,13 +663,16 @@ class STSPipeline:
 
             if self.voice_auth and request.audio_data:
                 try:
+                    phase_started_at = time()
                     voice_auth_result = await self.voice_auth.verify(
                         user_id=request.user_id,
                         audio_bytes=request.audio_data,
                         sample_rate=audio_sample_rate,
                         audio_duration=request.audio_duration,
                     )
+                    performance.voice_auth_time = time() - phase_started_at
                 except Exception as ex:
+                    performance.voice_auth_time = time() - phase_started_at
                     logger.warning("Voice authentication failed: %s", ex, exc_info=self.debug)
                     voice_auth_result = None
 
@@ -606,6 +699,11 @@ class STSPipeline:
                             voice_auth.get("similarity"),
                             voice_auth.get("threshold"),
                         )
+                    self._record_performance(
+                        performance,
+                        start_time,
+                        filter_reason="voice_auth_rejected",
+                    )
                     yield STSResponse(
                         type="canceled",
                         session_id=request.session_id,
@@ -618,17 +716,11 @@ class STSPipeline:
                 request.metadata = request.metadata or {}
                 request.metadata["voice_auth"] = voice_auth_result.to_dict()
 
-            performance = PerformanceRecord(
-                transaction_id=transaction_id,
-                user_id=request.user_id,
-                stt_name=self.stt.__class__.__name__,
-                llm_name=self.llm.__class__.__name__,
-                tts_name=self.tts.__class__.__name__
-            )
-
             # Record request voice
             if self.voice_recorder_enabled and request.audio_data:
+                phase_started_at = time()
                 await self.voice_recorder.record(RequestVoice(transaction_id, request.audio_data))
+                performance.request_voice_record_time += time() - phase_started_at
 
             if request.text:
                 # Use text if exist
@@ -639,10 +731,17 @@ class STSPipeline:
             elif request.audio_data:
                 # Speech-to-Text
                 input_type = "audio"
+                phase_started_at = time()
                 recognized_text = (await self.stt.recognize(request.session_id, request.audio_data)).text
+                performance.stt_recognition_time = time() - phase_started_at
                 if not recognized_text:
                     if self.debug:
                         logger.info("No speech recognized.")
+                    self._record_performance(
+                        performance,
+                        start_time,
+                        filter_reason="no_speech_recognized",
+                    )
                     yield STSResponse(
                         type="canceled",
                         session_id=request.session_id,
@@ -668,14 +767,20 @@ class STSPipeline:
             else:
                 request.text = recognized_text
 
+            phase_started_at = time()
             self._detect_audio_wakeword(request, audio_sample_rate)
+            performance.audio_wakeword_time = time() - phase_started_at
 
             # Get session state before gates that need conversation recency.
+            phase_started_at = time()
             state = await self.session_state_manager.get_session_state(request.session_id)
             now = datetime.now(timezone.utc)
             last_created_at = await self.llm.context_manager.get_last_created_at(request.context_id)
+            performance.session_context_time = time() - phase_started_at
 
+            phase_started_at = time()
             wakeword_decision = self.get_wakeword_decision(request, last_created_at)
+            performance.wakeword_decision_time = time() - phase_started_at
             if wakeword_decision["enabled"]:
                 request.metadata = request.metadata or {}
                 request.metadata["wakeword"] = wakeword_decision
@@ -691,6 +796,11 @@ class STSPipeline:
             addressing_required = self._is_addressing_detection_required(request)
 
             if not wakeword_decision["accepted"] and not addressing_required:
+                self._record_performance(
+                    performance,
+                    start_time,
+                    filter_reason="wakeword_rejected",
+                )
                 yield STSResponse(
                     type="canceled",
                     session_id=request.session_id,
@@ -716,12 +826,16 @@ class STSPipeline:
                     logger.info("Addressing skipped by wakeword: text=%s", recognized_text)
 
             if addressing_required and not skip_addressing_by_wakeword:
+                phase_started_at = time()
                 recent_history, seconds_since_last_assistant_turn = await self._get_addressing_context(request.user_id)
+                performance.addressing_context_time = time() - phase_started_at
+                phase_started_at = time()
                 addressing_decision = await self.addressing_detector.detect(
                     text=recognized_text,
                     recent_history=recent_history,
                     seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
                 )
+                performance.addressing_detection_time = time() - phase_started_at
                 if self.debug:
                     logger.info(
                         "Addressing decision: accepted=%s reason=%s confidence=%s explanation=%s text=%s",
@@ -734,6 +848,11 @@ class STSPipeline:
                 request.metadata = request.metadata or {}
                 request.metadata["addressing"] = addressing_decision.to_dict()
                 if not addressing_decision.accepted:
+                    self._record_performance(
+                        performance,
+                        start_time,
+                        filter_reason="addressing_rejected",
+                    )
                     yield STSResponse(
                         type="canceled",
                         session_id=request.session_id,
@@ -750,9 +869,16 @@ class STSPipeline:
                     return
 
             if self._validate_request:
+                phase_started_at = time()
                 if reason := await self._validate_request(request):
+                    performance.validate_request_time = time() - phase_started_at
                     if self.debug:
                         logger.info(f"Invalid request: {request.text} / reason: {reason}")
+                    self._record_performance(
+                        performance,
+                        start_time,
+                        filter_reason="validate_request_rejected",
+                    )
                     yield STSResponse(
                         type="canceled",
                         session_id=request.session_id,
@@ -766,6 +892,7 @@ class STSPipeline:
                         })
                     )
                     return
+                performance.validate_request_time = time() - phase_started_at
 
             performance.request_text = request.text
             performance.request_files = json.dumps(request.files or [], ensure_ascii=False)
@@ -773,6 +900,7 @@ class STSPipeline:
             performance.stt_time = time() - start_time
 
             # Merge consecutive requests
+            phase_started_at = time()
             if self.merge_request_threshold > 0 and request.allow_merge:
                 if state.previous_request_timestamp:
                     requests_interval = (now - state.previous_request_timestamp).total_seconds()
@@ -784,8 +912,10 @@ class STSPipeline:
                 await self.session_state_manager.update_previous_request(
                     request.session_id, now, request.text, request.files
                 )
+            performance.merge_request_time = time() - phase_started_at
 
             # Get context
+            phase_started_at = time()
             if request.context_id:
                 if last_created_at == datetime.min.replace(tzinfo=timezone.utc):
                     logger.info(f"Invalid context_id: {request.context_id}")
@@ -807,10 +937,12 @@ class STSPipeline:
             if self.debug:
                 logger.info(f"Start transaction: {transaction_id} {request.text} (previous: {state.active_transaction_id})")
             await self.session_state_manager.update_transaction(request.session_id, transaction_id, timestamp_inserted_at)
+            performance.context_prepare_time = time() - phase_started_at
 
             performance.context_id = request.context_id
 
             # Notify client that request is accepted only after request gates pass.
+            phase_started_at = time()
             if not suppress_adapter_response:
                 asyncio.create_task(self.handle_response(STSResponse(
                     type="accepted",
@@ -828,10 +960,13 @@ class STSPipeline:
                 )))
                 for handler in self._on_accepted_handlers:
                     await handler(request)
+            performance.accepted_notify_time = time() - phase_started_at
 
             # Stop on-going response before new response
+            phase_started_at = time()
             if not suppress_adapter_response and (not self.use_invoke_queue or not request.wait_in_queue):
                 await self.stop_response(request.session_id, request.context_id)
+            performance.stop_response_phase_time = time() - phase_started_at
             performance.stop_response_time = time() - start_time
 
             request_metadata = request.metadata or {}
@@ -850,8 +985,10 @@ class STSPipeline:
             )
 
             # LLM
+            phase_started_at = time()
             for handler in self._on_before_llm_handlers:
                 await handler(request)
+            performance.pre_llm_handler_time = time() - phase_started_at
             performance.before_llm_time = time() - start_time
             performance.quick_response_text = request.quick_response_text
 
@@ -869,15 +1006,27 @@ class STSPipeline:
                     metadata={"is_quick_response": True, "is_first_chunk": True}
                 )
 
-            llm_stream = self.llm.chat_stream(
-                context_id=request.context_id,
-                user_id=request.user_id,
-                text=request.text,
-                files=request.files,
-                system_prompt_params=request.system_prompt_params,
-                session_id=request.session_id,
-                channel=request.channel
-            )
+            def record_llm_request_start(started_at: float):
+                if performance.llm_request_start_time:
+                    return
+                try:
+                    performance.llm_request_start_time = max(0, float(started_at) - start_time)
+                except (TypeError, ValueError):
+                    pass
+
+            llm_stream_kwargs = {
+                "context_id": request.context_id,
+                "user_id": request.user_id,
+                "text": request.text,
+                "files": request.files,
+                "system_prompt_params": request.system_prompt_params,
+                "session_id": request.session_id,
+                "channel": request.channel,
+            }
+            chat_stream_params = inspect.signature(self.llm.chat_stream).parameters
+            if "request_start_callback" in chat_stream_params:
+                llm_stream_kwargs["request_start_callback"] = record_llm_request_start
+            llm_stream = self.llm.chat_stream(**llm_stream_kwargs)
 
             # TTS
             async def synthesize_stream() -> AsyncGenerator[Tuple[bytes, LLMResponse], None]:
@@ -1032,12 +1181,14 @@ class STSPipeline:
             tb = traceback.format_exc()
             logger.error(f"Error at invoke: {iex}\n\n{tb}")
 
-            if performance:
-                performance.error_info = json.dumps({
+            self._record_performance(
+                performance,
+                start_time,
+                error_info={
                     "error": str(iex),
-                    "traceback": tb
-                }, ensure_ascii=False)
-                self.performance_recorder.record(performance)
+                    "traceback": tb,
+                },
+            )
 
             yield STSResponse(
                 type="error",

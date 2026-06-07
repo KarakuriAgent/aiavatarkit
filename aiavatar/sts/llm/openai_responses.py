@@ -150,7 +150,7 @@ class OpenAIResponsesService(LLMService):
             tool_to_add.is_dynamic = is_dynamic
         self.tools[tool_to_add.name] = tool_to_add
 
-    async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None) -> AsyncGenerator[LLMResponse, None]:
+    async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None, request_start_callback=None) -> AsyncGenerator[LLMResponse, None]:
         # Build tools list
         all_tools = [t.spec for _, t in self.tools.items()]
 

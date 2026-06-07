@@ -10,6 +10,32 @@ from . import PerformanceRecorder, PerformanceRecord
 logger = logging.getLogger(__name__)
 
 
+PERFORMANCE_REAL_COLUMNS = [
+    "pre_vad_audio_processor_time",
+    "vad_final_stt_time",
+    "vad_segment_stt_time",
+    "vad_silence_time",
+    "vad_callback_to_pipeline_time",
+    "debug_request_audio_save_time",
+    "audio_enhancement_time",
+    "voice_auth_time",
+    "request_voice_record_time",
+    "stt_recognition_time",
+    "audio_wakeword_time",
+    "session_context_time",
+    "wakeword_decision_time",
+    "addressing_context_time",
+    "addressing_detection_time",
+    "validate_request_time",
+    "merge_request_time",
+    "context_prepare_time",
+    "accepted_notify_time",
+    "stop_response_phase_time",
+    "pre_llm_handler_time",
+    "llm_request_start_time",
+]
+
+
 class PostgreSQLPerformanceRecorder(PerformanceRecorder):
     def __init__(
         self,
@@ -69,7 +95,7 @@ class PostgreSQLPerformanceRecorder(PerformanceRecorder):
 
         return self._pool
 
-    async def add_column_if_not_exist(self, conn, column_name):
+    async def add_column_if_not_exist(self, conn, column_name, column_type="TEXT"):
         row = await conn.fetchrow(
             """
             SELECT column_name FROM information_schema.columns
@@ -79,7 +105,7 @@ class PostgreSQLPerformanceRecorder(PerformanceRecorder):
         )
         if not row:
             await conn.execute(
-                f"ALTER TABLE performance_records ADD COLUMN {column_name} TEXT"
+                f"ALTER TABLE performance_records ADD COLUMN {column_name} {column_type}"
             )
 
     async def init_db(self):
@@ -111,6 +137,28 @@ class PostgreSQLPerformanceRecorder(PerformanceRecorder):
                         request_files TEXT,
                         response_text TEXT,
                         response_voice_text TEXT,
+                        pre_vad_audio_processor_time REAL,
+                        vad_final_stt_time REAL,
+                        vad_segment_stt_time REAL,
+                        vad_silence_time REAL,
+                        vad_callback_to_pipeline_time REAL,
+                        debug_request_audio_save_time REAL,
+                        audio_enhancement_time REAL,
+                        voice_auth_time REAL,
+                        request_voice_record_time REAL,
+                        stt_recognition_time REAL,
+                        audio_wakeword_time REAL,
+                        session_context_time REAL,
+                        wakeword_decision_time REAL,
+                        addressing_context_time REAL,
+                        addressing_detection_time REAL,
+                        validate_request_time REAL,
+                        merge_request_time REAL,
+                        context_prepare_time REAL,
+                        accepted_notify_time REAL,
+                        stop_response_phase_time REAL,
+                        pre_llm_handler_time REAL,
+                        llm_request_start_time REAL,
                         quick_response_text TEXT,
                         error_info TEXT,
                         tool_calls TEXT
@@ -145,6 +193,9 @@ class PostgreSQLPerformanceRecorder(PerformanceRecorder):
 
                 # Add tool_calls column if not exist
                 await self.add_column_if_not_exist(conn, "tool_calls")
+
+                for column in PERFORMANCE_REAL_COLUMNS:
+                    await self.add_column_if_not_exist(conn, column, "REAL")
 
                 # Create index
                 await conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON performance_records (created_at)")

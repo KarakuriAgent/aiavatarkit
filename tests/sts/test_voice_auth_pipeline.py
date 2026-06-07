@@ -1,3 +1,6 @@
+import json
+import sqlite3
+
 import pytest
 
 from aiavatar.sts import STSPipeline
@@ -82,6 +85,18 @@ async def test_voice_auth_rejection_cancels_before_stt(tmp_path):
     assert responses[0].metadata["voice_auth"]["matched_voice_user_id"] == "user01"
 
     await sts.shutdown()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM performance_records ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        assert row["voice_auth_time"] >= 0
+        assert json.loads(row["error_info"])["filter_reason"] == "voice_auth_rejected"
+    finally:
+        conn.close()
 
 
 @pytest.mark.asyncio

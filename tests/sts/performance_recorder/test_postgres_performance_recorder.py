@@ -62,6 +62,10 @@ async def test_record_single(recorder, unique_transaction_id):
         request_text="Hello, world!",
         response_text="Hi there!",
         voice_length=1.5,
+        pre_vad_audio_processor_time=0.02,
+        voice_auth_time=0.03,
+        stt_recognition_time=0.04,
+        llm_request_start_time=0.2,
         stt_time=0.1,
         llm_time=0.5,
         tts_time=0.3,
@@ -87,6 +91,10 @@ async def test_record_single(recorder, unique_transaction_id):
         assert row["llm_name"] == "test_llm"
         assert row["tts_name"] == "test_tts"
         assert abs(row["voice_length"] - 1.5) < 0.01
+        assert abs(row["pre_vad_audio_processor_time"] - 0.02) < 0.01
+        assert abs(row["voice_auth_time"] - 0.03) < 0.01
+        assert abs(row["stt_recognition_time"] - 0.04) < 0.01
+        assert abs(row["llm_request_start_time"] - 0.2) < 0.01
         assert abs(row["stt_time"] - 0.1) < 0.01
         assert abs(row["llm_time"] - 0.5) < 0.01
         assert abs(row["tts_time"] - 0.3) < 0.01

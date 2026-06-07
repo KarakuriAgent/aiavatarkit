@@ -5,6 +5,7 @@ import math
 import struct
 import uuid
 from collections import deque
+from time import time
 from typing import Awaitable, Callable, Dict, List, Optional
 
 import httpx
@@ -417,7 +418,9 @@ class TenVadStreamSpeechDetector(SpeechDetector):
             return None
 
     async def _emit_final_speech_detected(self, session: RecordingSession, recorded_duration: float) -> bool:
+        final_stt_started_at = time()
         final_text = await self._recognize_final_text(session)
+        final_stt_time = time() - final_stt_started_at
         if not final_text:
             if self.debug:
                 logger.info("No final text recognized, skipping")
@@ -430,11 +433,18 @@ class TenVadStreamSpeechDetector(SpeechDetector):
                 return False
 
         recorded_data = bytes(session.buffer)
+        metadata = {
+            "_vad_final_stt_time": final_stt_time,
+            "_vad_segment_stt_time": session.data.get("_vad_segment_stt_time") or 0,
+            "_vad_silence_time": session.silence_duration,
+            "_vad_detected_wall_time": time(),
+        }
+        session.data["_vad_segment_stt_time"] = 0
         asyncio.create_task(
             self.execute_on_speech_detected(
                 recorded_data,
                 final_text,
-                None,
+                metadata,
                 recorded_duration,
                 session.session_id,
             )
@@ -523,7 +533,9 @@ class TenVadStreamSpeechDetector(SpeechDetector):
 
                 async def _run_segment_recognition(data: bytes, sess: RecordingSession, seq: int):
                     try:
+                        segment_stt_started_at = time()
                         result = await self.speech_recognizer.recognize(sess.session_id, data)
+                        sess.data["_vad_segment_stt_time"] = time() - segment_stt_started_at
                         recognized_text = result.text or ""
                         if recognized_text and seq == sess.recognition_sequence:
                             sess.last_recognized_text = recognized_text

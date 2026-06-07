@@ -1,7 +1,7 @@
 import logging
 import re
 from dataclasses import asdict
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -29,6 +29,7 @@ class ConversationLogResponse(BaseModel):
     response_voice_text: Optional[str] = None
     error_info: Optional[str] = None
     tool_calls: Optional[str] = None
+    performance_timings: Optional[Dict[str, float]] = None
 
 
 class ConversationGroupResponse(BaseModel):

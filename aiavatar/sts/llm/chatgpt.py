@@ -220,7 +220,7 @@ class ChatGPTService(LLMService):
 
         return tools
 
-    async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None) -> AsyncGenerator[LLMResponse, None]:
+    async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None, request_start_callback=None) -> AsyncGenerator[LLMResponse, None]:
         # Prepare all tools list (always include all tools)
         all_tools = [t.spec for _, t in self.tools.items()]
         if self.use_dynamic_tools:

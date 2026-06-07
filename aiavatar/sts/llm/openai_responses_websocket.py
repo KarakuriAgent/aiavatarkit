@@ -260,7 +260,7 @@ class OpenAIResponsesWebSocketService(LLMService):
 
         return message
 
-    async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None) -> AsyncGenerator[LLMResponse, None]:
+    async def get_llm_stream_response(self, context_id: str, user_id: str, messages: List[Dict], system_prompt_params: Dict[str, any] = None, tools: List[Dict[str, any]] = None, inline_llm_params: Dict[str, any] = None, session_id: str = None, channel: str = None, request_start_callback=None) -> AsyncGenerator[LLMResponse, None]:
         # System prompt
         system_prompt = await self._get_system_prompt(context_id, user_id, system_prompt_params)
 
