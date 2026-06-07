@@ -73,6 +73,7 @@ session_id
 ## Voice Prefix
 
 音声経由の入力には、デフォルトで `[channel:voice]` を先頭に付けて Hermes に送ります。
+Discord 経由の入力には `[channel:discord]` を付けます。`/avatar/speak` の `channel=hermes` / `cron` には、この channel prefix は付けません。
 
 ```env
 HERMES_REQUEST_PREFIX=[channel:voice]
@@ -391,7 +392,7 @@ SKIP_TTS_CHANNELS=discord
 
 `DISCORD_TYPING_INDICATOR_ENABLED` を有効にすると、Discord からのテキスト入力を処理している間と、StackChan 側の会話を Discord に同期している AI 応答処理中に、bot が対象チャンネルに typing indicator を出します。Discord の typing indicator は約 10 秒で消えるため、`DISCORD_TYPING_INDICATOR_INTERVAL` 秒ごとに更新します。
 
-Discord からのテキスト入力は `/conversation` の `delivery=text` 経路で処理されます。この経路は `adapter.handle_response()` を呼ばず、`channel=discord` を `skip_tts_channels` に追加するため、StackChan は喋らず AIVIS TTS も呼ばれません。
+Discord からのテキスト入力は `/conversation` の `delivery=text` 経路で処理されます。この経路は `adapter.handle_response()` を呼ばず、対象リクエスト中だけ `channel=discord` の TTS を抑止するため、StackChan は喋らず AIVIS TTS も呼ばれません。
 
 Discord bot は対象チャンネルの `MESSAGE_CREATE` を Gateway で受けるため、Discord Developer Portal 側で Message Content Intent を有効化してください。Webhook 投稿は Gateway にも見えるため、サーバー側では `webhook_id` 付き message と bot message を無視してループを防ぎます。
 
@@ -417,6 +418,8 @@ Content-Type: application/json
 
 {"user_id": "user01", "text": "そろそろ休憩の時間です。"}
 ```
+
+`voice` は省略時 `true` です。`voice=false` にすると、通知本文は同じ Hermes conversation に戻しますが、TTS と avatar への送信は行わず、生成結果を API response として返します。
 
 Discord sync が有効な場合、`/avatar/speak` の内部指示文は Discord には投稿されず、Hermes から返った bot 応答だけが webhook に流れます。この bot 応答には `DISCORD_API_MESSAGE_PREFIX` が付きます。Hermes cron/tool 由来の通知として見せたい場合は `.env` に `DISCORD_API_MESSAGE_PREFIX="📢 "` を設定してください。
 

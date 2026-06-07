@@ -70,7 +70,7 @@ async def test_text_delivery_returns_text_without_adapter_or_tts(tmp_path):
     assert tts.calls == []
     adapter.sts.handle_response.assert_not_called()
     adapter.sts.stop_response.assert_not_called()
-    assert "discord" in adapter.sts.skip_tts_channels
+    assert "discord" not in adapter.sts.skip_tts_channels
 
 
 @pytest.mark.asyncio
@@ -106,6 +106,71 @@ async def test_speak_request_uses_active_session_and_suppresses_discord_user_log
 
     final_response = next(call.args[0] for call in adapter.handle_response.call_args_list if call.args[0].type == "final")
     assert final_response.metadata["source"] == "avatar_speak"
+
+
+@pytest.mark.asyncio
+async def test_speak_request_voice_false_returns_text_without_adapter_or_tts(tmp_path):
+    adapter, tts, _vad_data = create_recording_adapter(tmp_path, response_text="[face:joy]完了しました。")
+    adapter.handle_response = AsyncMock()
+    adapter.sts.handle_response = AsyncMock()
+    adapter.sts.stop_response = AsyncMock()
+
+    response = await process_speak_request(
+        adapter,
+        SpeakRequest(
+            text="Hermesの作業が完了しました。",
+            user_id="robo-kanon-stack-chan",
+            channel="hermes",
+            voice=False,
+        ),
+    )
+
+    assert response.message == "Message processed successfully"
+    assert response.text == "[face:joy]完了しました。"
+    assert response.voice_text == "完了しました。"
+    assert response.context_id
+    assert tts.calls == []
+    adapter.handle_response.assert_not_called()
+    adapter.sts.handle_response.assert_not_called()
+    adapter.sts.stop_response.assert_not_called()
+    assert "hermes" not in adapter.sts.skip_tts_channels
+
+
+@pytest.mark.asyncio
+async def test_speak_request_voice_false_can_notify_adapter_response_hooks(tmp_path):
+    adapter, tts, vad_data = create_recording_adapter(tmp_path, response_text="[face:joy]完了しました。")
+    vad_data["discord:robo-kanon-stack-chan"] = {"context_id": "discord-context"}
+    adapter.handle_response = AsyncMock()
+    adapter.sts.handle_response = AsyncMock()
+    adapter.sts.stop_response = AsyncMock()
+
+    response = await process_speak_request(
+        adapter,
+        SpeakRequest(
+            text="Hermesの作業が完了しました。",
+            session_id="discord:robo-kanon-stack-chan",
+            user_id="robo-kanon-stack-chan",
+            channel="hermes",
+            voice=False,
+            metadata={"notify_adapter_response": True},
+        ),
+    )
+
+    assert response.message == "Message processed successfully"
+    assert response.text == "[face:joy]完了しました。"
+    assert response.voice_text == "完了しました。"
+    assert response.context_id
+    assert tts.calls == []
+    adapter.handle_response.assert_called_once()
+    final_response = adapter.handle_response.call_args.args[0]
+    assert final_response.type == "final"
+    assert final_response.session_id == "discord:robo-kanon-stack-chan"
+    assert final_response.context_id == response.context_id
+    assert final_response.metadata["notify_adapter_response"] is True
+    assert final_response.metadata["speak_text"] == "Hermesの作業が完了しました。"
+    assert final_response.metadata["source"] == "hermes"
+    adapter.sts.handle_response.assert_not_called()
+    adapter.sts.stop_response.assert_not_called()
 
 
 @pytest.mark.asyncio

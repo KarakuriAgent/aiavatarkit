@@ -11,6 +11,9 @@ from ..config import Settings
 
 logger = getLogger(__name__)
 
+CHANNEL_PREFIX_DISCORD = "[channel:discord]"
+CHANNEL_PREFIX_PATTERN = "[channel:"
+
 
 class HermesResponsesService(LLMService):
     def __init__(
@@ -63,6 +66,49 @@ class HermesResponsesService(LLMService):
         messages.append({"role": "assistant", "content": response_text})
         await self.context_manager.add_histories(context_id, messages, "hermes_responses", user_id=user_id)
 
+    def _request_prefix_for_channel(self, channel: str = None) -> str | None:
+        normalized_channel = channel.strip().lower() if isinstance(channel, str) else ""
+        if normalized_channel == "discord":
+            return CHANNEL_PREFIX_DISCORD
+        if normalized_channel in {"hermes", "cron"}:
+            return None
+        return self.request_prefix
+
+    @staticmethod
+    def _prepend_request_prefix(text: str, prefix: str = None) -> str:
+        if not text or not prefix:
+            return text
+        if text.lstrip().startswith(CHANNEL_PREFIX_PATTERN):
+            return text
+        return prefix + text
+
+    def _apply_request_prefix(self, messages: List[Dict], channel: str = None) -> None:
+        prefix = self._request_prefix_for_channel(channel)
+        if not prefix:
+            return
+
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = self._prepend_request_prefix(content, prefix)
+                return
+            if not isinstance(content, list):
+                continue
+            for index, item in enumerate(content):
+                if isinstance(item, str):
+                    content[index] = self._prepend_request_prefix(item, prefix)
+                    return
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") not in {"text", "input_text", "output_text"}:
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    item["text"] = self._prepend_request_prefix(text, prefix)
+                    return
+
     def _conversation_id(self, context_id: str, user_id: str, session_id: str = None) -> str:
         if self.conversation_id_source == "user_id":
             return user_id
@@ -82,12 +128,25 @@ class HermesResponsesService(LLMService):
         channel: str = None,
         request_start_callback=None,
     ) -> AsyncGenerator[LLMResponse, None]:
+        self._apply_request_prefix(messages, channel)
+
         request_body = {
             "model": self.model,
             "input": messages,
             "stream": True,
             "store": self.store,
         }
+        callback_metadata = {
+            key: value
+            for key, value in {
+                "channel": channel,
+                "session_id": session_id,
+                "user_id": user_id,
+            }.items()
+            if value
+        }
+        if callback_metadata:
+            request_body["callback_metadata"] = callback_metadata
 
         if self.reasoning_effort is not None:
             request_body["reasoning"] = {"effort": self.reasoning_effort}
@@ -175,11 +234,5 @@ def create_llm(settings: Settings):
         reasoning_effort=settings.hermes_reasoning_effort,
         debug=settings.debug,
     )
-
-    @llm.request_filter
-    def request_filter(text: str):
-        if text is not None and settings.hermes_request_prefix:
-            return settings.hermes_request_prefix + text
-        return text
 
     return llm

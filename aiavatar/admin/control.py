@@ -134,6 +134,14 @@ class SpeakRequest(BaseModel):
         default=True,
         description="When invoke queue is enabled, wait behind pending requests instead of interrupting."
     )
+    voice: bool = Field(
+        default=True,
+        description="Whether to deliver the generated response to the avatar voice output. False stores/returns the conversation response without TTS."
+    )
+    metadata: Optional[Dict] = Field(
+        default=None,
+        description="Internal metadata passed to the conversation processor"
+    )
 
 
 def build_speak_prompt(text: str) -> str:
@@ -187,49 +195,63 @@ async def process_conversation_request(
         session_id = session_id or f"text:{user_id}"
         channel = request.channel or "text"
 
-        # Text delivery must never synthesize audio. Make this true even if the
-        # caller forgot to configure STSPipeline.skip_tts_channels.
+        # Text delivery must never synthesize audio. Make this true for this
+        # invocation even if the caller forgot to configure skip_tts_channels,
+        # but do not permanently mark operational channels such as "hermes" as
+        # TTS-skipped.
+        added_skip_tts_channel = False
         if hasattr(adapter.sts, "skip_tts_channels") and channel not in adapter.sts.skip_tts_channels:
             adapter.sts.skip_tts_channels.append(channel)
+            added_skip_tts_channel = True
 
-        context_id = None
-        if hasattr(adapter.sts.vad, "get_session_data"):
-            context_id = adapter.sts.vad.get_session_data(session_id, "context_id")
+        try:
+            notify_adapter_response = bool((request.metadata or {}).get("notify_adapter_response"))
+            context_id = None
+            if hasattr(adapter.sts.vad, "get_session_data"):
+                context_id = adapter.sts.vad.get_session_data(session_id, "context_id")
 
-        response_text = ""
-        response_voice_text = ""
-        latest_context_id = context_id
-        async for resp in adapter.sts.invoke(STSRequest(
-            session_id=session_id,
-            user_id=user_id,
-            context_id=context_id,
-            text=request.text,
-            channel=channel,
-            wait_in_queue=request.wait_in_queue,
-            metadata={
-                **(request.metadata or {}),
-                "source": channel,
-                "delivery": "text",
-                "suppress_adapter_response": True,
-            }
-        )):
-            if resp.type == "start":
-                latest_context_id = resp.context_id
-                if hasattr(adapter.sts.vad, "set_session_data"):
-                    adapter.sts.vad.set_session_data(session_id, "context_id", resp.context_id, create_session=True)
-            elif resp.type == "chunk":
-                response_text += resp.text or ""
-                response_voice_text += resp.voice_text or ""
-                latest_context_id = resp.context_id or latest_context_id
-            elif resp.type == "final":
-                response_text = resp.text or response_text
-                response_voice_text = resp.voice_text or response_voice_text
-                latest_context_id = resp.context_id or latest_context_id
-            elif resp.type == "error":
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=(resp.metadata or {}).get("error", "Error in processing conversation")
-                )
+            response_text = ""
+            response_voice_text = ""
+            latest_context_id = context_id
+            async for resp in adapter.sts.invoke(STSRequest(
+                session_id=session_id,
+                user_id=user_id,
+                context_id=context_id,
+                text=request.text,
+                channel=channel,
+                wait_in_queue=request.wait_in_queue,
+                metadata={
+                    **(request.metadata or {}),
+                    "source": channel,
+                    "delivery": "text",
+                    "suppress_adapter_response": True,
+                }
+            )):
+                if resp.type == "start":
+                    latest_context_id = resp.context_id
+                    if hasattr(adapter.sts.vad, "set_session_data"):
+                        adapter.sts.vad.set_session_data(session_id, "context_id", resp.context_id, create_session=True)
+                elif resp.type == "chunk":
+                    response_text += resp.text or ""
+                    response_voice_text += resp.voice_text or ""
+                    latest_context_id = resp.context_id or latest_context_id
+                elif resp.type == "final":
+                    response_text = resp.text or response_text
+                    response_voice_text = resp.voice_text or response_voice_text
+                    latest_context_id = resp.context_id or latest_context_id
+                    if notify_adapter_response:
+                        await adapter.handle_response(resp)
+                elif resp.type == "error":
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(resp.metadata or {}).get("error", "Error in processing conversation")
+                    )
+        finally:
+            if added_skip_tts_channel:
+                try:
+                    adapter.sts.skip_tts_channels.remove(channel)
+                except ValueError:
+                    pass
 
         return ChatResponse(
             message="Message processed successfully",
@@ -279,11 +301,15 @@ async def process_speak_request(
     *,
     default_session_id: str = None,
 ) -> ChatResponse:
-    session_id = resolve_active_session_id(
-        adapter,
-        session_id=request.session_id or default_session_id,
-        user_id=request.user_id,
-    )
+    requested_session_id = request.session_id or default_session_id
+    if request.voice:
+        session_id = resolve_active_session_id(
+            adapter,
+            session_id=requested_session_id,
+            user_id=request.user_id,
+        )
+    else:
+        session_id = requested_session_id
     user_id = resolve_user_id(adapter, session_id=session_id, user_id=request.user_id)
     return await process_conversation_request(
         adapter,
@@ -292,12 +318,14 @@ async def process_speak_request(
             session_id=session_id,
             user_id=user_id,
             channel=request.channel or "cron",
-            delivery="avatar",
+            delivery="avatar" if request.voice else "text",
             wait_in_queue=request.wait_in_queue,
             metadata={
+                **(request.metadata or {}),
                 "source": "avatar_speak",
                 "suppress_discord_user_log": True,
                 "speak_text": request.text,
+                "voice": request.voice,
             },
         ),
     )
