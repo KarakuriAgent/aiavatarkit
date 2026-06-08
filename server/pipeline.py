@@ -37,6 +37,7 @@ def create_aiavatar_app(settings: Settings):
         voice_auth=voice_auth,
         addressing_detector=addressing_detector,
         addressing_history_limit=settings.addressing_history_limit,
+        wakeword_timeout=settings.wakeword_timeout,
         merge_request_threshold=settings.merge_request_threshold,
         use_invoke_queue=settings.use_invoke_queue,
         api_key=settings.aiavatar_api_key,

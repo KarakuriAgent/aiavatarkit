@@ -104,6 +104,7 @@ class Settings:
     audio_wakeword_activation_window: float
     audio_wakeword_cooldown: float
     audio_wakeword_inference_framework: str
+    wakeword_timeout: float
     wakeword_enrollment_dir: str
 
     audio_enhancement_enabled: bool
@@ -263,6 +264,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         audio_wakeword_activation_window=float(os.environ.get("AUDIO_WAKEWORD_ACTIVATION_WINDOW", "4")),
         audio_wakeword_cooldown=float(os.environ.get("AUDIO_WAKEWORD_COOLDOWN", "2")),
         audio_wakeword_inference_framework=os.environ.get("AUDIO_WAKEWORD_INFERENCE_FRAMEWORK", "onnx"),
+        wakeword_timeout=float(os.environ.get("WAKEWORD_TIMEOUT", "60")),
         wakeword_enrollment_dir=os.environ.get("WAKEWORD_ENROLLMENT_DIR", "data/wakeword_enrollment"),
         audio_enhancement_enabled=bool_env("AUDIO_ENHANCEMENT_ENABLED", False),
         audio_enhancement_provider=os.environ.get("AUDIO_ENHANCEMENT_PROVIDER", "deepfilternet"),

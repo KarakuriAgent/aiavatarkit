@@ -10,6 +10,7 @@ from server.providers import audio_wakeword as audio_wakeword_provider
 from server.providers import pre_vad_noise_suppression as pre_vad_provider
 from server.providers import vad as vad_provider
 from server.providers.voice_auth import create_voice_auth
+from server import pipeline as server_pipeline
 
 
 @pytest.mark.asyncio
@@ -255,6 +256,40 @@ def test_audio_wakeword_provider_maps_to_livekit_wakeword(tmp_path, monkeypatch)
     assert detector.kwargs["threshold"] == 0.62
     assert detector.kwargs["activation_window"] == 5
     assert detector.kwargs["cooldown"] == 1.5
+
+
+def test_create_aiavatar_app_passes_wakeword_timeout_from_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("WAKEWORD_TIMEOUT", raising=False)
+
+    captured = {}
+
+    class DummyAIAvatarWebSocketServer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(server_pipeline, "create_stt", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_vad", lambda settings, stt: None)
+    monkeypatch.setattr(server_pipeline, "create_llm", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_tts", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_pre_vad_audio_processor", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_audio_wakeword_detector", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_audio_enhancer", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_voice_auth", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "create_addressing_detector", lambda settings: None)
+    monkeypatch.setattr(server_pipeline, "AIAvatarWebSocketServer", DummyAIAvatarWebSocketServer)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join([
+            "HERMES_API_KEY=test-hermes-key",
+            "WAKEWORD_TIMEOUT=0",
+        ])
+    )
+
+    server_pipeline.create_aiavatar_app(load_settings(env_path))
+
+    assert captured["wakeword_timeout"] == 0
 
 
 def test_vad_provider_maps_tenvad_from_env(tmp_path, monkeypatch):
