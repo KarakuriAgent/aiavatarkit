@@ -5,6 +5,36 @@ import pytest
 from aiavatar.sts.addressing import OpenAICompatibleChatAddressingDetector
 
 
+class FakeAddressingResponse:
+    headers = {}
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class FakeAddressingHttpClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.posts = []
+
+    async def post(self, url, *, headers, json):
+        self.posts.append({
+            "url": url,
+            "headers": headers,
+            "json": json,
+        })
+        return FakeAddressingResponse(self.payload)
+
+    async def aclose(self):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_system_prompt_formats_assistant_history_as_primary_name():
     detector = OpenAICompatibleChatAddressingDetector(
@@ -42,7 +72,15 @@ async def test_system_prompt_formats_assistant_history_as_primary_name():
         assert "- 2026-06-04 10:14:08.456789+00:00 カノン: 明日は10時に定例、14時に歯医者があります。" in prompt
         assert "- 2026-06-04 10:14:12.000000+00:00 カノン: 午後は移動時間も必要です。" in prompt
         assert "Current time (UTC):" in prompt
+        assert "Use elapsed seconds as context" in prompt
+        assert "Do not use a fixed cutoff" in prompt
+        assert "adds an instruction or condition" in prompt
+        assert "choice, confirmation, or answer" in prompt
+        assert "continue, retry, or elaborate" in prompt
+        assert "cancels or changes the recent request" in prompt
+        assert "too much time has passed for the addressee to remain clear" in prompt
         assert "The explanation must be one short sentence citing the concrete evidence" in prompt
+        assert "20.0 seconds" not in prompt
         assert "assistant:" not in prompt
         assert "model:" not in prompt
 
@@ -141,12 +179,16 @@ async def test_chat_completions_json_object_request_body():
         assert body["temperature"] == 0
         assert body["response_format"] == {"type": "json_object"}
         assert body["max_tokens"] == 512
-        assert "20.0以上なら" in prompt
-        assert "出力JSONのトップレベルキー" in prompt
-        assert body["messages"][-1] == {
-            "role": "user",
-            "content": "実際の履歴: なし\n最後のassistant発話からの秒数: unknown\n現在の発話: ロボ花音、聞こえる?",
-        }
+        assert "Return only a JSON object" in prompt
+        assert "Use elapsed seconds as context" in prompt
+        assert "Do not use a fixed cutoff" in prompt
+        assert "Top-level JSON keys" in prompt
+        assert "20.0 seconds" not in prompt
+        assert body["messages"][-1]["role"] == "user"
+        user_content = body["messages"][-1]["content"]
+        assert user_content.startswith("Actual history: none\nCurrent time (UTC): ")
+        assert "\nSeconds since last assistant turn: unknown\n" in user_content
+        assert user_content.endswith("Current utterance: ロボ花音、聞こえる?")
     finally:
         await detector.close()
 
@@ -179,10 +221,11 @@ async def test_chat_completions_json_object_adds_history_messages():
             "role": "assistant",
             "content": "確認できています。",
         }
-        assert body["messages"][3] == {
-            "role": "user",
-            "content": "実際の履歴: あり\n最後のassistant発話からの秒数: 3.0\n現在の発話: 助かりました",
-        }
+        assert body["messages"][3]["role"] == "user"
+        user_content = body["messages"][3]["content"]
+        assert user_content.startswith("Actual history: present\nCurrent time (UTC): ")
+        assert "\nSeconds since last assistant turn: 3.0\n" in user_content
+        assert user_content.endswith("Current utterance: 助かりました")
     finally:
         await detector.close()
 
@@ -201,12 +244,85 @@ async def test_chat_completions_json_object_prompt_covers_context_patterns():
     try:
         prompt = detector._json_object_system_prompt()
 
-        assert "追加指示・補足条件" in prompt
-        assert "選択・確定・回答" in prompt
-        assert "継続・再実行・詳細化" in prompt
-        assert "取り消し・変更" in prompt
-        assert "省略・照応・追加・修正・回答" in prompt
-        assert "20.0以上なら" in prompt
+        assert "adds an instruction or condition" in prompt
+        assert "choice, confirmation, or answer" in prompt
+        assert "continue, retry, or elaborate" in prompt
+        assert "cancels or changes the recent request" in prompt
+        assert "ellipsis, anaphora, addition, correction, or an answer" in prompt
+        assert "Use elapsed seconds as context" in prompt
+        assert "Current time (UTC)" in prompt
+        assert "20.0 seconds" not in prompt
+    finally:
+        await detector.close()
+
+
+@pytest.mark.asyncio
+async def test_local_decision_accepts_called_name_without_http():
+    detector = OpenAICompatibleChatAddressingDetector(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="test-model",
+        target_names=["ロボ花音", "カノン"],
+    )
+
+    try:
+        decision = await detector.detect(
+            text="カノン、聞こえる?",
+            recent_history=[],
+            seconds_since_last_assistant_turn=None,
+        )
+
+        assert decision.accepted is True
+        assert decision.reason == "called_by_name"
+        assert decision.metadata["local_short_circuit"] is True
+    finally:
+        await detector.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_unnamed_utterance_uses_llm_instead_of_local_reject():
+    detector = OpenAICompatibleChatAddressingDetector(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="test-model",
+        api_format="chat_completions_json_object",
+        target_names=["ロボ花音", "カノン"],
+    )
+    fake_http = FakeAddressingHttpClient({
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({
+                        "accepted": False,
+                        "reason": "not_addressed",
+                        "confidence": 0.9,
+                        "explanation": "The elapsed time makes the addressee unclear.",
+                    })
+                }
+            }
+        ]
+    })
+    await detector.http_client.aclose()
+    detector.http_client = fake_http
+
+    try:
+        decision = await detector.detect(
+            text="うん、お願い",
+            recent_history=[
+                {"role": "assistant", "content": "この内容で進めますか?"},
+            ],
+            seconds_since_last_assistant_turn=25,
+        )
+
+        assert decision.accepted is False
+        assert decision.reason == "not_addressed"
+        assert "local_short_circuit" not in decision.metadata
+        assert len(fake_http.posts) == 1
+        body = fake_http.posts[0]["json"]
+        user_content = body["messages"][-1]["content"]
+        assert "Current time (UTC): " in user_content
+        assert "Seconds since last assistant turn: 25.0" in user_content
+        assert user_content.endswith("Current utterance: うん、お願い")
     finally:
         await detector.close()
 

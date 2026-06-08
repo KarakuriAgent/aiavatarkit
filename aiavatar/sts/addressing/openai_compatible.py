@@ -64,6 +64,12 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
                 explanation="The utterance is empty.",
             )
 
+        local_decision = self._local_decision(
+            text=text,
+        )
+        if local_decision is not None:
+            return self._apply_confidence_threshold(local_decision)
+
         try:
             resp = await self.http_client.post(
                 self._endpoint_url(),
@@ -175,15 +181,17 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
         if self.api_format == "chat_completions_json_object":
             history_messages = self._json_object_history_messages(recent_history)
             messages.extend(history_messages)
-            history_text = "あり" if history_messages else "なし"
+            history_text = "present" if history_messages else "none"
+            current_time_text = datetime.now(timezone.utc).isoformat()
             if seconds_since_last_assistant_turn is None:
                 seconds_text = "unknown"
             else:
                 seconds_text = f"{seconds_since_last_assistant_turn:.1f}"
             user_content = (
-                f"実際の履歴: {history_text}\n"
-                f"最後のassistant発話からの秒数: {seconds_text}\n"
-                f"現在の発話: {text}"
+                f"Actual history: {history_text}\n"
+                f"Current time (UTC): {current_time_text}\n"
+                f"Seconds since last assistant turn: {seconds_text}\n"
+                f"Current utterance: {text}"
             )
         else:
             user_content = text
@@ -224,62 +232,98 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
             "required": ["accepted", "reason", "confidence", "explanation"],
         }
 
-    def _json_object_system_prompt(self) -> str:
+    def _common_prompt_rules(self) -> str:
         reasons = "|".join(REASONS)
-        names = "、".join(self.target_names)
         name = self.primary_name
-        return f"""あなたは{name}への宛先判定だけを行う分類器です。返答文は作らず、JSONだけを返してください。
-最後のuser messageの「現在の発話:」以降だけを判定対象にしてください。
-実際の履歴は、このsystem messageの後に追加されるuser/assistant messagesだけです。system prompt内の説明と例は会話履歴ではありません。
-最後のassistant発話からの秒数と「実際の履歴: あり/なし」も判定に使ってください。
-対象名一覧: {names}
+        return f"""Decision rules:
+- If the current utterance actually contains one of your target names or aliases, set accepted=true and reason=called_by_name.
+- Use elapsed seconds as context. Decide whether the current utterance still naturally continues the recent conversation, or whether too much time has passed for the addressee to remain clear. Do not use a fixed cutoff; judge the utterance, recent history, and elapsed seconds together.
+- If elapsed time makes a short acknowledgement, addition, correction, cancellation, change, choice, or continuation too disconnected from the recent conversation, and no target name is present, set accepted=false and reason=not_addressed.
+- If there is actual recent conversation and the current utterance is a natural reply or follow-up to that conversation, set accepted=true and reason=contextual_reply.
+- If there is actual recent conversation and the current utterance corrects or rephrases the recent conversation, set reason=contextual_reply. This includes corrections to the user's own previous request, not only corrections to your last assistant message.
+- If there is actual recent conversation and the current utterance adds an instruction or condition, set reason=contextual_reply. Examples: "あと短くして", "それも保存して", "日本語で", "箇条書きにして", "もう少し詳しく".
+- If there is actual recent conversation and the current utterance is a choice, confirmation, or answer, set reason=contextual_reply. Examples: "それで", "一つ目で", "後者", "明日", "3つ", "東京".
+- If there is actual recent conversation and the current utterance asks to continue, retry, or elaborate, set reason=contextual_reply. Examples: "続けて", "続きを", "もう一回", "他には", "それってどういう意味？".
+- If there is actual recent conversation and the current utterance cancels or changes the recent request, set reason=contextual_reply. Examples: "やっぱりやめて", "キャンセル", "戻して", "こっちに変えて".
+- Accept short social utterances such as "ありがとう", "うん", "了解", "お願い", or "ごめん" only when they naturally connect to the actual recent conversation. Without actual recent conversation, set accepted=false.
+- If the utterance is naturally a monologue, set accepted=false and reason=monologue.
+- Reject speech to a third party, background speech, an independent new topic, an omitted instruction with no history, and utterances whose addressee is unclear by setting accepted=false.
+- Even for expressions not listed above, if the current utterance naturally connects to the recent conversation as ellipsis, anaphora, addition, correction, or an answer, set reason=contextual_reply.
 
-判定観点:
-- 最優先: 最後のassistant発話からの秒数が20.0以上なら、現在の発話に対象名が明示されている場合だけ accepted=true。対象名がなければ、相槌・追加・訂正・取り消し・変更・選択・継続に見えても必ず accepted=false。20.0以上では文脈の自然さを評価しない。
-- 現在の発話に対象名一覧のいずれかが実際に含まれるなら accepted=true, reason=called_by_name。
-- 現在の発話に対象名がなくても、実際の履歴があり、現在の発話が直近会話への自然な返答・続きなら accepted=true, reason=contextual_reply。
-- 実際の履歴があり、現在の発話が直近会話の内容への訂正・言い直しなら contextual_reply。直前のassistant発話だけでなく、直前のuser自身の依頼内容への訂正も含む。
-- 実際の履歴があり、現在の発話が追加指示・補足条件なら contextual_reply。例: 「あと短くして」「それも保存して」「日本語で」「箇条書きにして」「もう少し詳しく」。
-- 実際の履歴があり、現在の発話が選択・確定・回答なら contextual_reply。例: 「それで」「一つ目で」「後者」「明日」「3つ」「東京」。
-- 実際の履歴があり、現在の発話が継続・再実行・詳細化なら contextual_reply。例: 「続けて」「続きを」「もう一回」「他には」「それってどういう意味？」。
-- 実際の履歴があり、現在の発話が取り消し・変更なら contextual_reply。例: 「やっぱりやめて」「キャンセル」「戻して」「こっちに変えて」。
-- 短い社会的応答（ありがとう、うん、了解、お願い、ごめん等）は、実際の履歴と自然につながる場合だけ contextual_reply。履歴なしでは accepted=false。
-- 独り言として自然なら accepted=false, reason=monologue。
-- 第三者への呼びかけ、背景音声、独立した別話題、履歴なしの省略指示、判断不能な発話は accepted=false。
-- 上記に明記されていない表現でも、現在の発話が直近会話への省略・照応・追加・修正・回答として自然につながるなら contextual_reply。
+Examples. These examples are not conversation history, and the elapsed-second values in examples are not fixed thresholds.
+No recent conversation / Current utterance: {name}、今日の予定を教えて
+JSON: {{"accepted": true, "reason": "called_by_name", "confidence": 1.0, "explanation": "The current utterance contains a target name."}}
+No recent conversation / Current utterance: ありがとう
+JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "It is a short social utterance with no target name and no actual history."}}
+Recent conversation: user={name}、疎通確認だよ。 / assistant=はい、疎通確認できています。 / seconds: 3 / Current utterance: ありがとう
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It is a short thanks to the recent assistant response."}}
+Recent conversation: assistant=この内容で進めますか？ / seconds: 2 / Current utterance: うん、お願い
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It accepts the recent assistant question."}}
+Recent conversation: assistant=会議メモを要約しました。 / seconds: 4 / Current utterance: あと箇条書きにして
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It adds an instruction to the recent summary."}}
+Recent conversation: assistant=A案とB案があります。どちらにしますか？ / seconds: 3 / Current utterance: 後者で
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It answers the recent choice question."}}
+Recent conversation: assistant=ここまで説明しました。 / seconds: 2 / Current utterance: 続けて
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It asks to continue the recent explanation."}}
+Recent conversation: user={name}、明日の予定を確認して / assistant=明日は10時に予定があります。 / seconds: 3 / Current utterance: ごめん、言い間違えた。明日じゃなくて今日
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It corrects the user's recent request."}}
+Recent conversation: assistant=通知を設定します。 / seconds: 4 / Current utterance: やっぱりキャンセル
+JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "It cancels the recent assistant action."}}
+Recent conversation: user={name}、疎通確認だよ。 / assistant=はい、疎通確認できています。 / seconds: 3 / Current utterance: 太郎、これ見てくれる？
+JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.95, "explanation": "It calls a third party instead of a target name."}}
+Recent conversation: assistant=今日は晴れです。 / seconds: 90 / Current utterance: うん
+JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "The elapsed time makes the short acknowledgement too disconnected from the recent conversation."}}
+Recent conversation: assistant=通知を設定します。 / seconds: 90 / Current utterance: やっぱりキャンセル
+JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "The elapsed time makes the cancellation too disconnected from the recent action."}}
+No recent conversation / Current utterance: あと短くして
+JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "It is an omitted instruction with no history and no clear addressee."}}
 
-例。例は会話履歴ではありません。
-実際の履歴なし / 現在の発話: {name}、今日の予定を教えて
-JSON: {{"accepted": true, "reason": "called_by_name", "confidence": 1.0, "explanation": "現在の発話に対象名がある。"}}
-実際の履歴なし / 現在の発話: ありがとう
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "名前も実際の履歴もない短い応答である。"}}
-実際の履歴: user={name}、疎通確認だよ。 / assistant=はい、疎通確認できています。 / 秒数: 3 / 現在の発話: ありがとう
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の応答への短い謝意である。"}}
-実際の履歴: assistant=この内容で進めますか？ / 秒数: 2 / 現在の発話: うん、お願い
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の質問への承諾である。"}}
-実際の履歴: assistant=会議メモを要約しました。 / 秒数: 4 / 現在の発話: あと箇条書きにして
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の要約への追加指示である。"}}
-実際の履歴: assistant=A案とB案があります。どちらにしますか？ / 秒数: 3 / 現在の発話: 後者で
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の選択肢への回答である。"}}
-実際の履歴: assistant=ここまで説明しました。 / 秒数: 2 / 現在の発話: 続けて
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近説明の継続を求めている。"}}
-実際の履歴: user={name}、明日の予定を確認して / assistant=明日は10時に予定があります。 / 秒数: 3 / 現在の発話: ごめん、言い間違えた。明日じゃなくて今日
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の依頼内容を訂正している。"}}
-実際の履歴: assistant=通知を設定します。 / 秒数: 4 / 現在の発話: やっぱりキャンセル
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の処理への取り消し指示である。"}}
-実際の履歴: user={name}、疎通確認だよ。 / assistant=はい、疎通確認できています。 / 秒数: 3 / 現在の発話: 太郎、これ見てくれる？
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.95, "explanation": "対象以外の人物に呼びかけている。"}}
-実際の履歴: assistant=今日は晴れです。 / 秒数: 25 / 現在の発話: うん
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "20秒以上後の短い相槌で、対象名もない。"}}
-実際の履歴: assistant=通知を設定します。 / 秒数: 25 / 現在の発話: やっぱりキャンセル
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "20秒以上後の発話で、取り消しに見えても直近会話への文脈応答として扱わない。"}}
-実際の履歴なし / 現在の発話: あと短くして
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "履歴なしの省略指示で宛先が判断できない。"}}
+Top-level JSON keys: accepted, reason, confidence, explanation.
+reason must be one of: {reasons}.
+If accepted=true, reason must be one of called_by_name, contextual_reply, direct_request. Corrections, acknowledgements, added instructions, choices, continuations, and cancellations are contextual_reply.
+If accepted=false, reason must be one of monologue, not_addressed, ambiguous.
+The explanation must be one short sentence citing the concrete evidence for the decision."""
 
-出力JSONのトップレベルキー: accepted, reason, confidence, explanation。
-reason は {reasons} のどれか。
-accepted=true の reason は called_by_name, contextual_reply, direct_request のどれか。ただし訂正・相槌・追加指示・選択・継続・取り消しは contextual_reply。
-accepted=false の reason は monologue, not_addressed, ambiguous のどれか。"""
+    def _json_object_system_prompt(self) -> str:
+        names = "\n".join(f"- {name}" for name in self.target_names)
+        return f"""You are {self.primary_name}.
+
+You are a classifier that decides only whether the current utterance is addressed to {self.primary_name}.
+Do not draft a reply. Return only a JSON object.
+Judge only the text after "Current utterance:" in the latest user message.
+Actual recent conversation is the user/assistant messages after this system message. The latest user message also contains "Actual history", "Current time (UTC)", and "Seconds since last assistant turn".
+The examples in this system prompt are not conversation history.
+Use the recent conversation, the current time, and the elapsed seconds when making the decision.
+
+Your target names and aliases:
+{names}
+
+{self._common_prompt_rules()}"""
+
+    def _matched_target_name(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        for name in self.target_names:
+            if name and name in text:
+                return name
+        return None
+
+    def _local_decision(
+        self,
+        *,
+        text: str,
+    ) -> Optional[AddressingDecision]:
+        matched_name = self._matched_target_name(text)
+        if matched_name:
+            return AddressingDecision(
+                accepted=True,
+                reason="called_by_name",
+                confidence=1.0,
+                explanation=f"The utterance explicitly contains target name: {matched_name}.",
+                metadata={"local_short_circuit": True},
+            )
+
+        return None
 
     def _json_object_history_messages(
         self,
@@ -317,10 +361,12 @@ accepted=false の reason は monologue, not_addressed, ambiguous のどれか�
 
         return f"""You are {self.primary_name}.
 
-Decide only whether the current utterance is addressed to you.
-Do not draft a reply.
+You are a classifier that decides only whether the current utterance is addressed to {self.primary_name}.
+Do not draft a reply. Return only the structured JSON requested by the API schema.
+Judge only the latest user message as the current utterance. The examples in this prompt are not conversation history.
+Use the recent conversation, the current time, and the elapsed seconds when making the decision.
 
-Your names and aliases:
+Your target names and aliases:
 {names}
 
 Recent conversation:
@@ -332,15 +378,7 @@ Current time (UTC):
 Seconds since your last assistant turn:
 {seconds_text}
 
-Decision rules:
-- Accept if the utterance explicitly calls you by one of your names or aliases.
-- Accept if the utterance is clearly a reply or follow-up to your recent conversation.
-- Accept short utterances such as "うん", "お願い", "それで", "いいよ", or "違う" only when they are clearly replies to your recent utterance.
-- Do not accept merely because there is recent conversation. There must be concrete evidence in the current utterance or the immediately preceding turns.
-- If a long time has passed since your last assistant turn, lean toward rejecting short or ambiguous utterances.
-- Reject monologues, background speech, speech to a third party, or utterances that are not clearly addressed to you.
-- Reject when uncertain.
-- The explanation must be one short sentence citing the concrete evidence for the decision."""
+{self._common_prompt_rules()}"""
 
     def _format_history(self, recent_history: List[Dict[str, Any]]) -> str:
         if not recent_history:
