@@ -65,14 +65,6 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
             )
 
         try:
-            if self.api_format == "chat_completions_json_object":
-                decision = await self._detect_json_object_multistage(
-                    text=text,
-                    recent_history=recent_history or [],
-                    seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
-                )
-                return self._apply_confidence_threshold(decision)
-
             resp = await self.http_client.post(
                 self._endpoint_url(),
                 headers=self._headers(),
@@ -98,187 +90,6 @@ class OpenAICompatibleChatAddressingDetector(AddressingDetector):
                 explanation="The addressing detector failed.",
                 metadata={"error": str(ex)},
             )
-
-    async def _detect_json_object_multistage(
-        self,
-        *,
-        text: str,
-        recent_history: List[Dict[str, Any]],
-        seconds_since_last_assistant_turn: Optional[float],
-    ) -> AddressingDecision:
-        stage1_payload = await self._post_json_object_request(self._json_object_stage1_request_body(text=text))
-        stage1_data = self._extract_chat_json(stage1_payload)
-        stages = [{"stage": "current_utterance", "payload": stage1_data}]
-
-        matched_target_name = self._validated_stage1_target_name(stage1_data, text)
-        if matched_target_name:
-            return AddressingDecision(
-                accepted=True,
-                reason="called_by_name",
-                confidence=self._coerce_confidence(stage1_data.get("confidence", 1.0)),
-                explanation=str(stage1_data.get("explanation") or f"現在の発話に{matched_target_name}が含まれる。"),
-                metadata={
-                    "stage": "current_utterance",
-                    "matched_target_name": matched_target_name,
-                    "stages": stages,
-                },
-            )
-
-        stage2_payload = await self._post_json_object_request(
-            self._json_object_stage2_request_body(
-                text=text,
-                recent_history=recent_history,
-                seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
-            )
-        )
-        stage2_data = self._extract_chat_json(stage2_payload)
-        stages.append({"stage": "context", "payload": stage2_data})
-        decision = self._decision_from_data(stage2_data)
-        decision.metadata["stage"] = "context"
-        decision.metadata["stages"] = stages
-        if isinstance(stage2_data.get("checks"), dict):
-            decision.metadata["checks"] = stage2_data["checks"]
-        return decision
-
-    async def _post_json_object_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        resp = await self.http_client.post(
-            self._endpoint_url(),
-            headers=self._headers(),
-            json=body,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def _json_object_stage1_request_body(self, *, text: str) -> Dict[str, Any]:
-        return {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": self._json_object_stage1_system_prompt(),
-                },
-                {
-                    "role": "user",
-                    "content": f"現在の発話: {text}",
-                },
-            ],
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "max_tokens": 256,
-        }
-
-    def _json_object_stage2_request_body(
-        self,
-        *,
-        text: str,
-        recent_history: List[Dict[str, Any]],
-        seconds_since_last_assistant_turn: Optional[float],
-    ) -> Dict[str, Any]:
-        messages = [
-            {
-                "role": "system",
-                "content": self._json_object_stage2_system_prompt(),
-            },
-        ]
-        history_messages = self._json_object_history_messages(recent_history)
-        messages.extend(history_messages)
-        history_text = "あり" if history_messages else "なし"
-        if seconds_since_last_assistant_turn is None:
-            seconds_text = "unknown"
-        else:
-            seconds_text = f"{seconds_since_last_assistant_turn:.1f}"
-        messages.append({
-            "role": "user",
-            "content": (
-                f"実際の履歴: {history_text}\n"
-                f"最後のassistant発話からの秒数: {seconds_text}\n"
-                f"現在の発話: {text}"
-            ),
-        })
-        return {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "max_tokens": 512,
-        }
-
-    def _json_object_stage1_system_prompt(self) -> str:
-        targets = json.dumps(self.target_names, ensure_ascii=False)
-        name = self.primary_name
-        return f"""現在の発話だけを分類してください。文脈判断は禁止です。JSONだけを返してください。
-
-対象名JSON配列: {targets}
-
-手順:
-1. current_text に、ユーザーが指定した現在の発話を一字一句そのままコピーする。
-2. matched_target_name に、current_text の中に実際に含まれる対象名JSON配列の要素を入れる。含まれなければ空文字。対象名JSON配列や例からコピーしてはいけない。
-3. result は、matched_target_name が空でなければ accept。それ以外は continue。
-
-重要:
-- current_text に存在しない名前を matched_target_name に入れることは禁止。
-- matched_target_name は対象名JSON配列の要素だけ。
-- 「ありがとう」「うん」「お願い」「ごめん」は対象名でも人物名でもない。
-- 「ごめん、言い間違えた。明日じゃなくて今日」は訂正の可能性があるため result=continue。
-
-例:
-現在の発話: {name}、今日の予定を教えて
-JSON: {{"current_text": "{name}、今日の予定を教えて", "matched_target_name": "{name}", "result": "accept", "reason": "called_by_name", "confidence": 1.0, "explanation": "現在の発話に対象名がある。"}}
-現在の発話: 太郎、これ見てくれる？
-JSON: {{"current_text": "太郎、これ見てくれる？", "matched_target_name": "", "result": "continue", "reason": "ambiguous", "confidence": 0.8, "explanation": "文脈で宛先を判断する必要がある。"}}
-現在の発話: ありがとう
-JSON: {{"current_text": "ありがとう", "matched_target_name": "", "result": "continue", "reason": "ambiguous", "confidence": 0.8, "explanation": "文脈で判断する必要がある。"}}
-現在の発話: ごめん、言い間違えた。明日じゃなくて今日
-JSON: {{"current_text": "ごめん、言い間違えた。明日じゃなくて今日", "matched_target_name": "", "result": "continue", "reason": "ambiguous", "confidence": 0.8, "explanation": "文脈で訂正か判断する必要がある。"}}
-
-出力キー: current_text, matched_target_name, result, reason, confidence, explanation。"""
-
-    def _json_object_stage2_system_prompt(self) -> str:
-        reasons = "|".join(REASONS)
-        names = "、".join(self.target_names)
-        name = self.primary_name
-        return f"""あなたは{name}への宛先判定だけを行う分類器です。返答文は作らず、JSONだけを返してください。
-最後のuser messageの「現在の発話:」以降だけを判定対象にしてください。
-最後のassistant発話からの秒数と「実際の履歴: あり/なし」も判定に使ってください。system prompt内の説明と例は会話履歴ではありません。実際の履歴は、このsystem messageの後に追加されるuser/assistant messagesだけです。
-対象名一覧: {names}
-
-判定観点:
-- 最優先: 最後のassistant発話から20秒以上後の発話は、相槌・追加・訂正・取り消し・変更に見えても、直近会話への文脈応答として扱わず accepted=false。
-- 実際の履歴があり、現在の発話が直近会話への自然な返答・続きなら contextual_reply。履歴なしなら不可。
-- 実際の履歴があり、現在の発話が直近会話の内容への訂正・言い直しなら contextual_reply。直前のassistant発話だけでなく、直前のuser自身の依頼内容への訂正も含む。
-- 実際の履歴があり、現在の発話が追加指示・補足条件なら contextual_reply。例: 「あと短くして」「それも保存して」「日本語で」「箇条書きにして」「もう少し詳しく」。
-- 実際の履歴があり、現在の発話が選択・確定・回答なら contextual_reply。例: 「それで」「一つ目で」「後者」「明日」「3つ」「東京」。
-- 実際の履歴があり、現在の発話が継続・再実行・詳細化なら contextual_reply。例: 「続けて」「続きを」「もう一回」「他には」「それってどういう意味？」。
-- 実際の履歴があり、現在の発話が取り消し・変更なら contextual_reply。例: 「やっぱりやめて」「キャンセル」「戻して」「こっちに変えて」。
-- 独り言として自然なら monologue。
-- 短い社会的応答（ありがとう、うん、了解、お願い、ごめん等）は、実際の履歴と自然につながる場合だけ contextual_reply。履歴なしでは accepted=false。
-- 上記に明記されていない表現でも、現在の発話が直近会話への省略・照応・追加・修正・回答として自然につながるなら contextual_reply。履歴なし、20秒以上後、第三者への発話、独り言、背景音声、独立した別話題なら accepted=false。
-
-例。例は会話履歴ではありません。
-実際の履歴なし / 現在の発話: ありがとう
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "名前も実際の履歴もない短い応答である。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": false, "correction": false}}}}
-実際の履歴: user={name}、疎通確認だよ。 / assistant=はい、疎通確認できています。 / 秒数: 3 / 現在の発話: ありがとう
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の応答への短い謝意である。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": false}}}}
-実際の履歴: assistant=この内容で進めますか？ / 秒数: 2 / 現在の発話: うん、お願い
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の質問への承諾である。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": false}}}}
-実際の履歴: assistant=会議メモを要約しました。 / 秒数: 4 / 現在の発話: あと箇条書きにして
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の要約への追加指示である。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": false}}}}
-実際の履歴: assistant=A案とB案があります。どちらにしますか？ / 秒数: 3 / 現在の発話: 後者で
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の選択肢への回答である。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": false}}}}
-実際の履歴: assistant=ここまで説明しました。 / 秒数: 2 / 現在の発話: 続けて
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近説明の継続を求めている。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": false}}}}
-実際の履歴: user={name}、明日の予定を確認して / assistant=明日は10時に予定があります。 / 秒数: 3 / 現在の発話: ごめん、言い間違えた。明日じゃなくて今日
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の依頼内容を訂正している。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": true}}}}
-実際の履歴: assistant=通知を設定します。 / 秒数: 4 / 現在の発話: やっぱりキャンセル
-JSON: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直近の処理への取り消し指示である。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": true, "correction": false}}}}
-実際の履歴: user={name}、疎通確認だよ。 / assistant=はい、疎通確認できています。 / 秒数: 3 / 現在の発話: 太郎、これ見てくれる？
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.95, "explanation": "対象以外の人物に呼びかけている。", "checks": {{"name_call": false, "third_party_call": true, "context_reply": false, "correction": false}}}}
-実際の履歴: assistant=通知を設定します。 / 秒数: 25 / 現在の発話: やっぱりキャンセル
-JSON: {{"accepted": false, "reason": "not_addressed", "confidence": 0.85, "explanation": "20秒以上後の発話で、取り消しに見えても直近会話への文脈応答として扱わない。", "checks": {{"name_call": false, "third_party_call": false, "context_reply": false, "correction": false}}}}
-出力JSONのトップレベルキー: accepted, reason, confidence, explanation, checks。
-reason は {reasons} のどれか。
-Stage 2で accepted=true の reason は contextual_reply または direct_request。訂正・相槌・追加指示・選択・継続・取り消しは contextual_reply。
-accepted=false の reason は monologue, not_addressed, ambiguous のどれか。"""
 
     def detect_sync(
         self,
@@ -340,11 +151,7 @@ accepted=false の reason は monologue, not_addressed, ambiguous のどれか�
             }
 
         if self.api_format == "chat_completions_json_object":
-            system_prompt = self._json_object_system_prompt(system_prompt)
-            response_format = {"type": "json_object"}
-            max_tokens = 256
-        elif self.api_format == "chat_completions_json_object_single":
-            system_prompt = self._json_object_single_system_prompt()
+            system_prompt = self._json_object_system_prompt()
             response_format = {"type": "json_object"}
             max_tokens = 512
         else:
@@ -366,9 +173,6 @@ accepted=false の reason は monologue, not_addressed, ambiguous のどれか�
             },
         ]
         if self.api_format == "chat_completions_json_object":
-            messages.extend(self._json_object_history_messages(recent_history))
-            user_content = f"現在の発話を判定: {text}"
-        elif self.api_format == "chat_completions_json_object_single":
             history_messages = self._json_object_history_messages(recent_history)
             messages.extend(history_messages)
             history_text = "あり" if history_messages else "なし"
@@ -420,57 +224,7 @@ accepted=false の reason は monologue, not_addressed, ambiguous のどれか�
             "required": ["accepted", "reason", "confidence", "explanation"],
         }
 
-    def _json_object_system_prompt(self, base_prompt: str) -> str:
-        reasons = "|".join(REASONS)
-        name = self.primary_name
-        return f"""{base_prompt}
-
-Additional disambiguation rules:
-- Judge the current utterance itself. Do not use names or aliases that appear only in the history as evidence for called_by_name.
-- Use called_by_name only when the current utterance explicitly contains one of your names or aliases.
-- Use contextual_reply when the current utterance is a natural immediate reply to your latest turn in the recent conversation.
-- Short acknowledgements, thanks, apologies, corrections, consent, refusal, or continuation phrases can be contextual_reply only when they clearly respond to your latest turn.
-- Do not accept a short utterance merely because any history exists. The immediately preceding turns must make it a natural response to you.
-- If accepted is true, reason must be called_by_name, contextual_reply, or direct_request.
-- If accepted is false, reason must be monologue, not_addressed, or ambiguous.
-
-日本語での補足:
-- 判定対象は「現在の発話」です。履歴の中に名前があっても、現在の発話に名前がなければ called_by_name にしないでください。
-- 現在の発話に名前がなくても、直前のあなたの発話に対する自然な短い応答なら contextual_reply です。
-- 謝意、相槌、謝罪、言い間違いの訂正、承諾、拒否、続きを促す表現は、直前のあなたの発話への応答として自然なら contextual_reply の具体的根拠になります。
-- 直前のあなたの発話と自然につながる場合、名前呼びは不要です。
-- 最後のあなたの発話から短時間で、現在の発話が短い社会的応答（感謝・お礼、了解、相槌、謝罪、訂正、承諾、拒否など）なら、曖昧ではなく contextual_reply と判断してください。
-- 「明確な呼びかけがない」ことだけを理由に、直前のあなたへの自然な短い応答を rejected/ambiguous にしないでください。
-- ただし、直前のあなたの発話と自然につながらない短い発話や、第三者向けの発話は rejected/ambiguous にしてください。
-- 直近のあなたの発話が (none) の場合、contextual_reply にはできません。現在の発話に名前や明確な宛先がなければ accepted=false です。
-
-Output contract:
-- Return exactly one compact JSON object. Do not return markdown or any reply text.
-- Keys: accepted, reason, confidence, explanation.
-- accepted must be boolean true or false.
-- reason must be one of: {reasons}.
-- confidence must be a number from 0 to 1.
-- explanation must be one short sentence.
-
-Examples:
-Input: "{name}、今日の予定を教えて"
-Output: {{"accepted": true, "reason": "called_by_name", "confidence": 1.0, "explanation": "{name}と名前で呼んでいる。"}}
-
-Input: "これは独り言なんだけど、眠いな"
-Output: {{"accepted": false, "reason": "monologue", "confidence": 0.9, "explanation": "独り言と明示している。"}}
-
-Recent latest turn from {name}: "確認できています。"
-Input: "助かりました"
-Output: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直前の{name}の返答への短い謝意表現である。"}}
-
-Recent latest turn from {name}: "この内容で進めますか?"
-Input: "うん、お願い"
-Output: {{"accepted": true, "reason": "contextual_reply", "confidence": 0.95, "explanation": "直前の{name}の質問への承諾である。"}}
-
-Input: "明日の会議、資料できた?"
-Output: {{"accepted": false, "reason": "ambiguous", "confidence": 0.7, "explanation": "宛先が明示されていない。"}}"""
-
-    def _json_object_single_system_prompt(self) -> str:
+    def _json_object_system_prompt(self) -> str:
         reasons = "|".join(REASONS)
         names = "、".join(self.target_names)
         name = self.primary_name
@@ -670,43 +424,6 @@ Decision rules:
         if not isinstance(data, dict):
             raise ValueError("Expected a JSON object from addressing detector")
         return data
-
-    def _decision_from_data(self, data: Dict[str, Any]) -> AddressingDecision:
-        accepted = self._coerce_bool(data.get("accepted", False))
-        reason = str(data.get("reason") or ("contextual_reply" if accepted else "not_addressed"))
-        metadata = {}
-        if reason not in REASONS:
-            metadata["original_reason"] = reason
-            reason = "ambiguous" if accepted else "not_addressed"
-        return AddressingDecision(
-            accepted=accepted,
-            reason=reason,
-            confidence=self._coerce_confidence(data.get("confidence", 0.0)),
-            explanation=str(data.get("explanation") or ""),
-            metadata=metadata,
-        )
-
-    def _coerce_confidence(self, value: Any) -> float:
-        try:
-            confidence = float(value)
-        except (TypeError, ValueError):
-            return 0.0
-        if confidence > 1 and confidence <= 100:
-            confidence = confidence / 100
-        return max(0.0, min(confidence, 1.0))
-
-    def _string_candidates(self, value: Any) -> List[str]:
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, str)]
-        return []
-
-    def _validated_stage1_target_name(self, data: Dict[str, Any], text: str) -> Optional[str]:
-        for candidate in self._string_candidates(data.get("matched_target_name")):
-            if candidate in self.target_names and candidate in text:
-                return candidate
-        return None
 
     def _parse_response(self, payload: Dict[str, Any]) -> AddressingDecision:
         if self.api_format == "responses":

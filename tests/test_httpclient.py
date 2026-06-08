@@ -165,7 +165,7 @@ async def test_chat_face_animation(aiavatar_app: AIAvatar):
 @pytest.mark.skip("Needs server settings for wakeword")
 @pytest.mark.asyncio
 async def test_chat_wakeword(aiavatar_app: AIAvatar):
-    # Before this test, start server with wakewords=["こんにちは"] and wakeword_timeout=10
+    # Before this test, start server with wakewords=["こんにちは"]
 
     session_id = f"test_chat_wakeword_session_{str(uuid4())}"
     user_id = "test_chat_wakeword_user"

@@ -127,7 +127,6 @@ class AIAvatarHttpServer(Adapter):
         tts_voicevox_url: str = "http://127.0.0.1:50021",
         tts_voicevox_speaker: int = 46,
         wakewords: List[str] = None,
-        wakeword_timeout: float = 60.0,
         merge_request_threshold: float = 0.0,
         merge_request_prefix: str = "$Previous user's request and your response have been canceled. Please respond again to the following request:\n\n",
         timestamp_interval_seconds: float = 0.0,
@@ -174,7 +173,6 @@ class AIAvatarHttpServer(Adapter):
             tts_voicevox_speaker=tts_voicevox_speaker or voicevox_speaker,
             # Pipeline
             wakewords=wakewords,
-            wakeword_timeout=wakeword_timeout,
             merge_request_threshold=merge_request_threshold,
             merge_request_prefix=merge_request_prefix,
             timestamp_interval_seconds=timestamp_interval_seconds,

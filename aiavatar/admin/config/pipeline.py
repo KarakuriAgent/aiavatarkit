@@ -17,10 +17,6 @@ class PipelineConfig(BaseModel):
         default=None,
         description="A list of wakewords to activate the pipeline."
     )
-    wakeword_timeout: Optional[float] = Field(
-        default=None,
-        description="Timeout in seconds after which the pipeline requires a wakeword again."
-    )
     merge_request_threshold: Optional[float] = Field(
         default=None,
         description="Time threshold in seconds for merging consecutive requests."

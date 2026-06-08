@@ -163,7 +163,6 @@ async def test_wakeword_acceptance_skips_addressing_detection(tmp_path):
         tts=SpeechSynthesizerDummy(),
         addressing_detector=detector,
         wakewords=["カノン"],
-        wakeword_timeout=10,
         voice_recorder_enabled=False,
         db_connection_str=db_path,
     )
@@ -255,7 +254,6 @@ async def test_wakeword_rejection_cancels_when_addressing_is_disabled(tmp_path):
         llm=LLMServiceDummy(response_text="ok", db_connection_str=db_path),
         tts=SpeechSynthesizerDummy(),
         wakewords=["カノン"],
-        wakeword_timeout=10,
         voice_recorder_enabled=False,
         db_connection_str=db_path,
     )

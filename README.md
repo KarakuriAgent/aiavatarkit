@@ -3276,13 +3276,12 @@ llm.add_tool(
 
 ### 🐓 Wakeword
 
-Set `wakewords` when instantiating `AIAvatar`. Conversation will start when the AIAvatar recognizes one of the words in this list. You can also set `wakeword_timeout`, after which the AIAvatar will return to listening for the wakeword again.
+Set `wakewords` when instantiating `AIAvatar`. Conversation will start when the AIAvatar recognizes one of the words in this list.
 
 ```python
 aiavatar_app = AIAvatar(
     openai_api_key=OPENAI_API_KEY,
     wakewords=["Hello", "こんにちは"],
-    wakeword_timeout=60,
 )
 ```
 

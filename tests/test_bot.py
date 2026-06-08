@@ -217,7 +217,6 @@ async def test_chat_wakeword(aiavatar_app: AIAvatar):
     task = asyncio.create_task(aiavatar_app.start_listening(session_id=session_id, user_id=user_id))
 
     aiavatar_app.local_server.sts.wakewords = ["こんにちは", "こんにちわ"]
-    aiavatar_app.local_server.sts.wakeword_timeout = 10
 
     try:
         # Not triggered chat

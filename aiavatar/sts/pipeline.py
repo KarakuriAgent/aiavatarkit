@@ -56,7 +56,6 @@ class STSPipeline:
         tts_voicevox_url: str = "http://127.0.0.1:50021",
         tts_voicevox_speaker: int = 46,
         wakewords: List[str] = None,
-        wakeword_timeout: float = 60.0,
         audio_wakeword_detector: StreamingWakewordDetector = None,
         merge_request_threshold: float = 0.0,
         merge_request_prefix: str = "$Previous user's request and your response have been canceled. Please respond again to the following request:\n\n",
@@ -200,7 +199,6 @@ class STSPipeline:
 
         # Wakeword
         self.wakewords = wakewords
-        self.wakeword_timeout = wakeword_timeout
         self.audio_wakeword_detector = audio_wakeword_detector
 
         # Merge consecutive requests
@@ -267,7 +265,6 @@ class STSPipeline:
     def get_config(self) -> dict:
         return {
             "wakewords": self.wakewords,
-            "wakeword_timeout": self.wakeword_timeout,
             "audio_wakeword_detector": self.audio_wakeword_detector.get_config()
             if self.audio_wakeword_detector
             else None,
@@ -343,7 +340,6 @@ class STSPipeline:
         return self.get_wakeword_decision(request, last_request_at)["accepted"]
 
     def get_wakeword_decision(self, request: STSRequest, last_request_at: datetime) -> dict:
-        now = datetime.now(timezone.utc)
         audio_decision = self._get_audio_wakeword_decision(request)
 
         if not self.wakewords and not audio_decision:
@@ -351,14 +347,6 @@ class STSPipeline:
                 "enabled": False,
                 "accepted": True,
                 "reason": "not_configured",
-            }
-
-        if self.wakeword_timeout > (now - last_request_at).total_seconds():
-            return {
-                "enabled": True,
-                "accepted": True,
-                "reason": "within_timeout",
-                "timeout": self.wakeword_timeout,
             }
 
         if audio_decision and audio_decision.get("accepted"):

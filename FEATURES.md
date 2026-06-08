@@ -636,7 +636,6 @@ A mode that activates on specific keywords. **Smart speaker-like behavior that d
 | Setting | Description |
 |---------|-------------|
 | **wakewords** | List of activation keywords. ["Hey Avatar", "OK Avatar"], etc. |
-| **wakeword_timeout** | Validity period after activation (seconds). 60 seconds means no wake word needed for 1 minute |
 
 ### 5.4 Quick Response
 

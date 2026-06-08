@@ -184,7 +184,6 @@ async def test_sts_pipeline_wakeword():
             debug=True
         ),
         wakewords=["こんにちは"],
-        wakeword_timeout=10,
         performance_recorder=SQLitePerformanceRecorder(),  # DB記録
         debug=True
     )
