@@ -15,15 +15,16 @@ class FakeAddressingDetector(AddressingDetector):
         self.decision = decision
         self.calls = []
 
-    async def detect(self, *, text, recent_history=None, seconds_since_last_assistant_turn=None):
+    async def detect(self, *, text, recent_history=None, seconds_since_last_assistant_turn=None, recent_unaccepted_count=None):
         self.calls.append({
             "text": text,
             "recent_history": recent_history or [],
             "seconds_since_last_assistant_turn": seconds_since_last_assistant_turn,
+            "recent_unaccepted_count": recent_unaccepted_count,
         })
         return self.decision
 
-    def detect_sync(self, *, text, recent_history=None, seconds_since_last_assistant_turn=None):
+    def detect_sync(self, *, text, recent_history=None, seconds_since_last_assistant_turn=None, recent_unaccepted_count=None):
         return self.decision
 
 
@@ -338,5 +339,58 @@ async def test_addressing_detector_is_not_called_for_text_only_request(tmp_path)
 
     assert detector.calls == []
     assert any(response.type == "final" for response in responses)
+
+    await sts.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_addressing_rejection_count_is_passed_and_cleared_on_accept(tmp_path):
+    db_path = str(tmp_path / "addressing_reject_count.db")
+    detector = FakeAddressingDetector(AddressingDecision(
+        accepted=False,
+        reason="not_addressed",
+        confidence=0.9,
+    ))
+    sts = STSPipeline(
+        vad=SpeechDetectorDummy(),
+        stt=CountingSpeechRecognizer("ただいま"),
+        llm=LLMServiceDummy(response_text="ok", db_connection_str=db_path),
+        tts=SpeechSynthesizerDummy(),
+        addressing_detector=detector,
+        voice_recorder_enabled=False,
+        db_connection_str=db_path,
+    )
+
+    async def invoke_once():
+        return [
+            response
+            async for response in sts.invoke(STSRequest(
+                session_id="addressing-reject-count",
+                user_id="user01",
+                audio_data=b"\x00\x00" * 16000,
+                audio_duration=1.5,
+            ))
+        ]
+
+    await invoke_once()
+    await invoke_once()
+    assert detector.calls[0]["recent_unaccepted_count"] == 0
+    assert detector.calls[1]["recent_unaccepted_count"] == 1
+
+    detector.decision = AddressingDecision(
+        accepted=True,
+        reason="contextual_reply",
+        confidence=0.95,
+    )
+    await invoke_once()
+    assert detector.calls[2]["recent_unaccepted_count"] == 2
+
+    detector.decision = AddressingDecision(
+        accepted=False,
+        reason="not_addressed",
+        confidence=0.9,
+    )
+    await invoke_once()
+    assert detector.calls[3]["recent_unaccepted_count"] == 0
 
     await sts.shutdown()

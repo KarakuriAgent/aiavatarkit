@@ -248,6 +248,8 @@ class STSPipeline:
         # Addressing detection
         self.addressing_detector = addressing_detector
         self.addressing_history_limit = addressing_history_limit
+        self.addressing_rejection_window = 60.0
+        self._addressing_rejections: dict[str, List[float]] = {}
 
         # User custom logic
         self._on_before_llm_handlers = []
@@ -515,6 +517,23 @@ class STSPipeline:
             fallback_to_global=True,
         )
         return recent_history, self._seconds_since_last_assistant_turn(recent_history)
+
+    def _count_recent_addressing_rejections(self, user_id: str) -> int:
+        timestamps = self._addressing_rejections.get(user_id)
+        if not timestamps:
+            return 0
+        cutoff = time() - self.addressing_rejection_window
+        timestamps[:] = [ts for ts in timestamps if ts >= cutoff]
+        if not timestamps:
+            self._addressing_rejections.pop(user_id, None)
+            return 0
+        return len(timestamps)
+
+    def _record_addressing_rejection(self, user_id: str):
+        self._addressing_rejections.setdefault(user_id, []).append(time())
+
+    def _clear_addressing_rejections(self, user_id: str):
+        self._addressing_rejections.pop(user_id, None)
 
     def _seconds_since_last_assistant_turn(self, recent_history: List[dict]) -> Optional[float]:
         for item in reversed(recent_history or []):
@@ -810,6 +829,7 @@ class STSPipeline:
                     "skipped": True,
                     "reason": "wakeword_accepted",
                 }
+                self._clear_addressing_rejections(request.user_id)
                 if self.debug:
                     logger.info("Addressing skipped by wakeword: text=%s", recognized_text)
 
@@ -822,6 +842,7 @@ class STSPipeline:
                     text=recognized_text,
                     recent_history=recent_history,
                     seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
+                    recent_unaccepted_count=self._count_recent_addressing_rejections(request.user_id),
                 )
                 performance.addressing_detection_time = time() - phase_started_at
                 if self.debug:
@@ -835,7 +856,10 @@ class STSPipeline:
                     )
                 request.metadata = request.metadata or {}
                 request.metadata["addressing"] = addressing_decision.to_dict()
-                if not addressing_decision.accepted:
+                if addressing_decision.accepted:
+                    self._clear_addressing_rejections(request.user_id)
+                else:
+                    self._record_addressing_rejection(request.user_id)
                     self._record_performance(
                         performance,
                         start_time,

@@ -23,12 +23,14 @@ class AddressingDetector(ABC):
         text: str,
         recent_history: List[Dict[str, Any]] = None,
         seconds_since_last_assistant_turn: Optional[float] = None,
+        recent_unaccepted_count: Optional[int] = None,
     ) -> AddressingDecision:
         return await asyncio.to_thread(
             self.detect_sync,
             text=text,
             recent_history=recent_history,
             seconds_since_last_assistant_turn=seconds_since_last_assistant_turn,
+            recent_unaccepted_count=recent_unaccepted_count,
         )
 
     @abstractmethod
@@ -38,6 +40,7 @@ class AddressingDetector(ABC):
         text: str,
         recent_history: List[Dict[str, Any]] = None,
         seconds_since_last_assistant_turn: Optional[float] = None,
+        recent_unaccepted_count: Optional[int] = None,
     ) -> AddressingDecision:
         ...
 

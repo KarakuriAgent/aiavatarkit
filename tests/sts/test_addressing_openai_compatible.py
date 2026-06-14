@@ -72,21 +72,23 @@ async def test_system_prompt_formats_assistant_history_as_primary_name():
         assert "- 2026-06-04 10:14:08.456789+00:00 カノン: 明日は10時に定例、14時に歯医者があります。" in prompt
         assert "- 2026-06-04 10:14:12.000000+00:00 カノン: 午後は移動時間も必要です。" in prompt
         assert "Current time (UTC):" in prompt
-        assert "Use elapsed seconds as context" in prompt
-        assert "Do not use a fixed cutoff" in prompt
-        assert "adds an instruction or condition" in prompt
-        assert "choice, confirmation, or answer" in prompt
-        assert "continue, retry, or elaborate" in prompt
-        assert "cancels or changes the recent request" in prompt
-        assert "too much time has passed for the addressee to remain clear" in prompt
-        assert "The explanation must be one short sentence citing the concrete evidence" in prompt
+        assert prompt.startswith("Reasoning: low")
+        assert "Decision procedure" in prompt
+        assert "When in doubt, reject" in prompt
+        assert "awaits an answer" in prompt
+        assert "from about 15 to 120 seconds" in prompt
+        assert "Not-addressed utterances in the last 60 seconds:" in prompt
+        assert "explanation: one short sentence citing the concrete evidence" in prompt
         assert "20.0 seconds" not in prompt
         assert "assistant:" not in prompt
         assert "model:" not in prompt
 
         schema = body["response_format"]["json_schema"]["schema"]
         assert schema["properties"]["explanation"] == {"type": "string"}
+        assert schema["properties"]["elapsed_seconds"] == {"type": ["number", "null"]}
+        assert list(schema["properties"]) == ["explanation", "elapsed_seconds", "reason", "confidence", "accepted"]
         assert "explanation" in schema["required"]
+        assert "elapsed_seconds" in schema["required"]
     finally:
         await detector.close()
 
@@ -144,7 +146,7 @@ async def test_responses_request_body_uses_text_format_schema():
         assert body["model"] == "test-model"
         assert body["store"] is False
         assert body["stream"] is True
-        assert "You are カノン." in body["instructions"]
+        assert "the assistant named カノン" in body["instructions"]
         assert body["input"] == [{
             "role": "user",
             "content": [{"type": "input_text", "text": "カノン、聞こえる?"}],
@@ -178,16 +180,16 @@ async def test_chat_completions_json_object_request_body():
         assert body["model"] == "test-model"
         assert body["temperature"] == 0
         assert body["response_format"] == {"type": "json_object"}
-        assert body["max_tokens"] == 512
-        assert "Return only a JSON object" in prompt
-        assert "Use elapsed seconds as context" in prompt
-        assert "Do not use a fixed cutoff" in prompt
-        assert "Top-level JSON keys" in prompt
+        assert body["max_tokens"] == 1024
+        assert prompt.startswith("Reasoning: low")
+        assert "Return only one JSON object" in prompt
+        assert "keys in this exact order: explanation, elapsed_seconds, reason, confidence, accepted" in prompt
         assert "20.0 seconds" not in prompt
         assert body["messages"][-1]["role"] == "user"
         user_content = body["messages"][-1]["content"]
         assert user_content.startswith("Actual history: none\nCurrent time (UTC): ")
         assert "\nSeconds since last assistant turn: unknown\n" in user_content
+        assert "\nNot-addressed utterances in the last 60 seconds: unknown\n" in user_content
         assert user_content.endswith("Current utterance: ロボ花音、聞こえる?")
     finally:
         await detector.close()
@@ -211,6 +213,7 @@ async def test_chat_completions_json_object_adds_history_messages():
                 {"role": "assistant", "content": "確認できています。"},
             ],
             seconds_since_last_assistant_turn=3,
+            recent_unaccepted_count=2,
         )
 
         assert body["messages"][1] == {
@@ -225,6 +228,7 @@ async def test_chat_completions_json_object_adds_history_messages():
         user_content = body["messages"][3]["content"]
         assert user_content.startswith("Actual history: present\nCurrent time (UTC): ")
         assert "\nSeconds since last assistant turn: 3.0\n" in user_content
+        assert "\nNot-addressed utterances in the last 60 seconds: 2\n" in user_content
         assert user_content.endswith("Current utterance: 助かりました")
     finally:
         await detector.close()
@@ -244,12 +248,14 @@ async def test_chat_completions_json_object_prompt_covers_context_patterns():
     try:
         prompt = detector._json_object_system_prompt()
 
-        assert "adds an instruction or condition" in prompt
-        assert "choice, confirmation, or answer" in prompt
-        assert "continue, retry, or elaborate" in prompt
-        assert "cancels or changes the recent request" in prompt
-        assert "ellipsis, anaphora, addition, correction, or an answer" in prompt
-        assert "Use elapsed seconds as context" in prompt
+        assert prompt.startswith("Reasoning: low")
+        assert "When in doubt, reject" in prompt
+        assert "awaits an answer" in prompt
+        assert "an added instruction, a cancellation, or a request to continue or retry" in prompt
+        assert "talked about to someone else" in prompt
+        assert "reason=monologue" in prompt
+        assert "Not-addressed utterances in the last 60 seconds" in prompt
+        assert "A reply-shaped utterance alone is NOT enough" in prompt
         assert "Current time (UTC)" in prompt
         assert "20.0 seconds" not in prompt
     finally:
