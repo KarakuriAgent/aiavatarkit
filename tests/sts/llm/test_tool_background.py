@@ -223,6 +223,43 @@ async def test_timeout_falls_back_to_background():
     assert completed[0]["result"] == {"answer": "slow"}
 
 
+@pytest.mark.asyncio
+async def test_cancel_background_tasks_cancels_running_future():
+    completed = []
+
+    async def my_func(query: str):
+        await asyncio.sleep(5)
+        return {"answer": query}
+
+    tool = make_tool(my_func)
+
+    @tool.on_completed
+    async def handle_completed(result, metadata):
+        completed.append({"result": result, "metadata": metadata})
+
+    svc = make_service_with_tool(tool)
+
+    results = []
+    async for tr in svc.execute_tool(
+        "test_tool",
+        {"query": "slow"},
+        {"context_id": "c1", "user_id": "u1", "session_id": "s1"},
+    ):
+        results.append(tr)
+
+    assert len(results) == 1
+    task_id = results[0].task_id
+
+    cancelled = svc.cancel_background_tasks(session_id="s1")
+    assert cancelled == [task_id]
+
+    tc = ToolCall(id="1", name="test_tool", arguments='{"query": "slow"}', result=results[0])
+    svc._start_deferred_callbacks([tc])
+    await asyncio.sleep(0)
+
+    assert completed == []
+
+
 # --- Error handling in background ---
 
 @pytest.mark.asyncio

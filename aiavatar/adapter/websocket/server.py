@@ -6,6 +6,7 @@ import re
 import wave
 from time import time
 from typing import List, Dict, Callable, Awaitable, Optional
+from uuid import uuid4
 from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketException, status
 from ...database import PoolProvider
 from ...sts.models import STSRequest, STSResponse
@@ -36,6 +37,8 @@ class WebSocketSessionData:
         self.data = {}
         self.send_lock = asyncio.Lock()
         self.active_transaction_id: Optional[str] = None
+        self.invoke_tasks: set[asyncio.Task] = set()
+        self.tool_progress_tasks: Dict[str, asyncio.Task] = {}
 
 
 class AIAvatarWebSocketServer(Adapter):
@@ -95,6 +98,9 @@ class AIAvatarWebSocketServer(Adapter):
         audio_enhancement_record_raw: bool = True,
         audio_enhancement_record_enhanced: bool = True,
         addressing_history_limit: int = 12,
+        ptt_voice_auth_enabled: bool = True,
+        ptt_wakeword_enabled: bool = False,
+        ptt_addressing_enabled: bool = False,
         invoke_queue_idle_timeout: float = 10.0,
         invoke_timeout: float = 60.0,
         use_invoke_queue: bool = False,
@@ -103,6 +109,7 @@ class AIAvatarWebSocketServer(Adapter):
 
         # WebSocket processing
         response_audio_chunk_size: int = 0, # 0 = Send whole audio data at once
+        tool_progress_interval: float = 5.0,
         send_voiced: bool = False,
         # API server auth
         api_key: str = None,
@@ -156,6 +163,9 @@ class AIAvatarWebSocketServer(Adapter):
             voice_auth=voice_auth,
             addressing_detector=addressing_detector,
             addressing_history_limit=addressing_history_limit,
+            ptt_voice_auth_enabled=ptt_voice_auth_enabled,
+            ptt_wakeword_enabled=ptt_wakeword_enabled,
+            ptt_addressing_enabled=ptt_addressing_enabled,
             invoke_queue_idle_timeout=invoke_queue_idle_timeout,
             invoke_timeout=invoke_timeout,
             use_invoke_queue=use_invoke_queue,
@@ -176,6 +186,7 @@ class AIAvatarWebSocketServer(Adapter):
 
         # WebSocket processing
         self.response_audio_chunk_size = response_audio_chunk_size
+        self.tool_progress_interval = tool_progress_interval
         self.pre_vad_audio_processor = pre_vad_audio_processor
         if sts is not None and audio_wakeword_detector is not None:
             self.sts.audio_wakeword_detector = audio_wakeword_detector
@@ -220,6 +231,7 @@ class AIAvatarWebSocketServer(Adapter):
     def get_config(self) -> dict:
         return {
             "response_audio_chunk_size": self.response_audio_chunk_size,
+            "tool_progress_interval": self.tool_progress_interval,
             "pre_vad_audio_processor": self.pre_vad_audio_processor.get_config()
             if self.pre_vad_audio_processor
             else None,
@@ -236,6 +248,123 @@ class AIAvatarWebSocketServer(Adapter):
     def on_disconnect(self, func: Callable[[WebSocketSessionData], Awaitable[None]]):
         self._on_disconnect = func
         return func
+
+    @staticmethod
+    def _metadata_for_invoke_request(request: AIAvatarRequest) -> Optional[dict]:
+        metadata = dict(request.metadata or {})
+        if request.audio_data and not (request.text or "").strip() and "input_mode" not in metadata:
+            metadata["input_mode"] = "ptt"
+        return metadata or None
+
+    async def _run_invoke_request(
+        self,
+        request: AIAvatarRequest,
+        context_id: str,
+        invoke_metadata: Optional[dict],
+        session_data: WebSocketSessionData,
+    ):
+        try:
+            async for r in self.sts.invoke(STSRequest(
+                type=request.type,
+                session_id=request.session_id,
+                user_id=request.user_id,
+                context_id=context_id,
+                text=request.text,
+                audio_data=base64.b64decode(request.audio_data) if request.audio_data else None,
+                files=request.files,
+                system_prompt_params=request.system_prompt_params,
+                allow_merge=request.allow_merge,
+                wait_in_queue=request.wait_in_queue,
+                channel=request.channel,
+                metadata=invoke_metadata
+            )):
+                if r.type == "start":
+                    self.sts.vad.set_session_data(request.session_id, "context_id", r.context_id)
+                await self.sts.handle_response(r)
+        except asyncio.CancelledError:
+            if self.debug:
+                logger.info("WebSocket invoke task cancelled: session=%s", request.session_id)
+        except Exception:
+            logger.exception("WebSocket invoke task failed: session=%s", request.session_id)
+            await self.handle_response(STSResponse(
+                type="error",
+                session_id=request.session_id,
+                user_id=request.user_id,
+                context_id=context_id,
+                metadata={"error": "Error in processing Speech-to-Speech pipeline"}
+            ))
+        finally:
+            current_task = asyncio.current_task()
+            if current_task:
+                session_data.invoke_tasks.discard(current_task)
+
+    def _start_invoke_task(
+        self,
+        request: AIAvatarRequest,
+        context_id: str,
+        invoke_metadata: Optional[dict],
+        session_data: WebSocketSessionData,
+    ):
+        task = asyncio.create_task(
+            self._run_invoke_request(request, context_id, invoke_metadata, session_data)
+        )
+        session_data.invoke_tasks.add(task)
+        task.add_done_callback(session_data.invoke_tasks.discard)
+
+    def _cancel_session_local_tasks(self, session_data: WebSocketSessionData):
+        for task in list(session_data.invoke_tasks):
+            if not task.done():
+                task.cancel()
+        session_data.invoke_tasks.clear()
+
+        for task in list(session_data.tool_progress_tasks.values()):
+            if not task.done():
+                task.cancel()
+        session_data.tool_progress_tasks.clear()
+
+    async def cancel_current_processing(
+        self,
+        session_id: str,
+        context_id: str = None,
+        reason: str = "client_cancelled",
+        send_cancelled: bool = True,
+    ) -> dict:
+        session_data = self.sessions.get(session_id)
+        if session_data:
+            self._cancel_session_local_tasks(session_data)
+
+        cancel_transaction_id = f"cancelled:{uuid4()}"
+        if hasattr(self.sts, "cancel_session"):
+            try:
+                cancel_transaction_id = await self.sts.cancel_session(session_id)
+            except Exception:
+                logger.exception("Failed to cancel STS session: session=%s", session_id)
+
+        if session_data:
+            session_data.active_transaction_id = cancel_transaction_id
+
+        cancelled_tool_task_ids = []
+        llm = getattr(self.sts, "llm", None)
+        if llm and hasattr(llm, "cancel_background_tasks"):
+            cancelled_tool_task_ids = llm.cancel_background_tasks(session_id=session_id)
+
+        if send_cancelled:
+            await self.stop_response(session_id, context_id)
+            await self.send_response(AIAvatarResponse(
+                type="cancelled",
+                session_id=session_id,
+                context_id=context_id,
+                metadata={
+                    "reason": reason,
+                    "cancel_transaction_id": cancel_transaction_id,
+                    "cancelled_tool_task_ids": cancelled_tool_task_ids,
+                },
+            ))
+
+        return {
+            "cancel_transaction_id": cancel_transaction_id,
+            "cancelled_tool_task_ids": cancelled_tool_task_ids,
+        }
 
     # Request
     async def process_websocket(self, websocket: WebSocket, session_data: WebSocketSessionData):
@@ -297,31 +426,30 @@ class AIAvatarWebSocketServer(Adapter):
             else:
                 context_id = self.sts.vad.get_session_data(request.session_id, "context_id")
 
-            if request.metadata and "barge_in_enabled" in request.metadata:
+            invoke_metadata = self._metadata_for_invoke_request(request)
+
+            if invoke_metadata and "barge_in_enabled" in invoke_metadata:
                 self.sts.vad.set_session_data(
                     request.session_id,
                     "barge_in_enabled",
-                    bool(request.metadata.get("barge_in_enabled")),
+                    bool(invoke_metadata.get("barge_in_enabled")),
                     True
                 )
 
-            async for r in self.sts.invoke(STSRequest(
-                type=request.type,
-                session_id=request.session_id,
-                user_id=request.user_id,
+            active_session_data = self.sessions.get(request.session_id) or session_data
+            self._start_invoke_task(request, context_id, invoke_metadata, active_session_data)
+
+        elif request.type == "cancel":
+            if request.context_id:
+                context_id = request.context_id
+            else:
+                context_id = self.sts.vad.get_session_data(request.session_id, "context_id")
+            metadata = request.metadata or {}
+            await self.cancel_current_processing(
+                request.session_id,
                 context_id=context_id,
-                text=request.text,
-                audio_data=base64.b64decode(request.audio_data) if request.audio_data else None,
-                files=request.files,
-                system_prompt_params=request.system_prompt_params,
-                allow_merge=request.allow_merge,
-                wait_in_queue=request.wait_in_queue,
-                channel=request.channel,
-                metadata=request.metadata
-            )):
-                if r.type == "start":
-                    self.sts.vad.set_session_data(request.session_id, "context_id", r.context_id)
-                await self.sts.handle_response(r)
+                reason=metadata.get("reason", "client_cancelled"),
+            )
 
         elif request.type == "data":
             audio_data = base64.b64decode(request.audio_data)
@@ -397,6 +525,92 @@ class AIAvatarWebSocketServer(Adapter):
                     aiavatar_response.session_id,
                     aiavatar_response.type,
                 )
+
+    def _get_tool(self, tool_name: str):
+        sts = getattr(self, "sts", None)
+        llm = getattr(sts, "llm", None)
+        tools = getattr(llm, "tools", {}) if llm else {}
+        return tools.get(tool_name)
+
+    def _background_task_metadata(self, tool, task_id: str):
+        if tool and hasattr(tool, "get_background_task_metadata"):
+            return tool.get_background_task_metadata(task_id)
+        return None
+
+    def _running_tool_task(self, tool, task_id: str):
+        if tool and hasattr(tool, "get_running_task"):
+            return tool.get_running_task(task_id)
+        return None
+
+    def _start_tool_progress_loop_if_needed(self, response: STSResponse):
+        if not response.tool_call or not response.tool_call.result:
+            return
+
+        task_id = response.tool_call.result.task_id
+        if not task_id:
+            return
+
+        session_data = self.sessions.get(response.session_id)
+        if not session_data or task_id in session_data.tool_progress_tasks:
+            return
+
+        tool = self._get_tool(response.tool_call.name)
+        if not self._background_task_metadata(tool, task_id):
+            return
+
+        task = asyncio.create_task(self._tool_progress_loop(
+            session_id=response.session_id,
+            user_id=response.user_id,
+            context_id=response.context_id,
+            tool_name=response.tool_call.name,
+            task_id=task_id,
+        ))
+        session_data.tool_progress_tasks[task_id] = task
+
+    async def _tool_progress_loop(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        context_id: str,
+        tool_name: str,
+        task_id: str,
+    ):
+        try:
+            while True:
+                await asyncio.sleep(getattr(self, "tool_progress_interval", 5.0))
+                tool = self._get_tool(tool_name)
+                task_metadata = self._background_task_metadata(tool, task_id)
+                running_task = self._running_tool_task(tool, task_id)
+
+                if not task_metadata and not running_task:
+                    return
+
+                progress_metadata = {
+                    "task_id": task_id,
+                    "tool_name": tool_name,
+                    "status": "running",
+                }
+                if running_task:
+                    progress_metadata.update({
+                        "request": running_task.get("request"),
+                        "progress": running_task.get("progress", ""),
+                        "report_channel": running_task.get("report_channel"),
+                    })
+
+                await self.send_response(AIAvatarResponse(
+                    type="tool_progress",
+                    session_id=session_id,
+                    user_id=user_id,
+                    context_id=context_id,
+                    metadata=progress_metadata,
+                ))
+        except asyncio.CancelledError:
+            return
+        finally:
+            session_data = self.sessions.get(session_id)
+            if session_data and session_data.tool_progress_tasks.get(task_id) is asyncio.current_task():
+                session_data.tool_progress_tasks.pop(task_id, None)
 
     async def handle_response(self, response: STSResponse):
         session_data = self.sessions.get(response.session_id)
@@ -505,6 +719,7 @@ class AIAvatarWebSocketServer(Adapter):
 
         elif response.type == "tool_call":
             aiavatar_response.metadata["tool_call"] = response.tool_call.to_dict()
+            self._start_tool_progress_loop_if_needed(response)
 
         elif response.type == "final":
             vision_source = self.parse_vision_source(response.text)
@@ -597,6 +812,11 @@ class AIAvatarWebSocketServer(Adapter):
 
             finally:
                 if session_data.id:
+                    self._cancel_session_local_tasks(session_data)
+                    llm = getattr(self.sts, "llm", None)
+                    if llm and hasattr(llm, "cancel_background_tasks"):
+                        llm.cancel_background_tasks(session_id=session_data.id)
+
                     if self._on_disconnect:
                         await self._on_disconnect(session_data)
 

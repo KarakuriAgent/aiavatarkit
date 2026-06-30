@@ -65,6 +65,8 @@ class Settings:
     hermes_conversation_id_source: str
     hermes_store: bool
     hermes_reasoning_effort: str | None
+    hermes_delegation_poll_interval: float
+    hermes_delegation_timeout: float
 
     stt_provider: str
     stt_base_url: str | None
@@ -146,6 +148,10 @@ class Settings:
     addressing_fail_open: bool
     addressing_min_confidence: float
 
+    ptt_voice_auth_enabled: bool
+    ptt_wakeword_enabled: bool
+    ptt_addressing_enabled: bool
+
     llm_provider: str
 
     tts_provider: str
@@ -225,6 +231,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         hermes_conversation_id_source=os.environ.get("HERMES_CONVERSATION_ID_SOURCE", "user_id"),
         hermes_store=bool_env("HERMES_STORE", True),
         hermes_reasoning_effort=optional_env("HERMES_REASONING_EFFORT"),
+        hermes_delegation_poll_interval=float(os.environ.get("HERMES_DELEGATION_POLL_INTERVAL", "2")),
+        hermes_delegation_timeout=float(os.environ.get("HERMES_DELEGATION_TIMEOUT", "1800")),
         stt_provider=stt_provider,
         stt_base_url=optional_env("STT_BASE_URL"),
         stt_api_key=optional_env("STT_API_KEY"),
@@ -301,6 +309,9 @@ def load_settings(env_path: Path | None = None) -> Settings:
         addressing_timeout=float(os.environ.get("ADDRESSING_TIMEOUT", "10")),
         addressing_fail_open=bool_env("ADDRESSING_FAIL_OPEN", False),
         addressing_min_confidence=float(os.environ.get("ADDRESSING_MIN_CONFIDENCE", "0")),
+        ptt_voice_auth_enabled=bool_env("PTT_VOICE_AUTH_ENABLED", True),
+        ptt_wakeword_enabled=bool_env("PTT_WAKEWORD_ENABLED", False),
+        ptt_addressing_enabled=bool_env("PTT_ADDRESSING_ENABLED", False),
         llm_provider=os.environ.get("LLM_PROVIDER", "hermes"),
         tts_provider=os.environ.get("TTS_PROVIDER", "aivis"),
         tts_api_key=optional_env("TTS_API_KEY") or optional_env("IRODORI_API_KEY"),

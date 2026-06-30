@@ -110,6 +110,47 @@ async def test_addressing_provider_override_does_not_fallback_to_hermes_api_key(
     await detector.close()
 
 
+def test_ptt_gate_policy_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("PTT_VOICE_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("PTT_WAKEWORD_ENABLED", raising=False)
+    monkeypatch.delenv("PTT_ADDRESSING_ENABLED", raising=False)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("HERMES_API_KEY=test-hermes-key")
+
+    settings = load_settings(env_path)
+
+    assert settings.ptt_voice_auth_enabled is True
+    assert settings.ptt_wakeword_enabled is False
+    assert settings.ptt_addressing_enabled is False
+
+
+def test_ptt_gate_policy_env_overrides(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.delenv("PTT_VOICE_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("PTT_WAKEWORD_ENABLED", raising=False)
+    monkeypatch.delenv("PTT_ADDRESSING_ENABLED", raising=False)
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "HERMES_API_KEY=test-hermes-key",
+                "PTT_VOICE_AUTH_ENABLED=false",
+                "PTT_WAKEWORD_ENABLED=true",
+                "PTT_ADDRESSING_ENABLED=true",
+            ]
+        )
+    )
+
+    settings = load_settings(env_path)
+
+    assert settings.ptt_voice_auth_enabled is False
+    assert settings.ptt_wakeword_enabled is True
+    assert settings.ptt_addressing_enabled is True
+
+
 def test_audio_enhancement_provider_disabled_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_API_KEY", raising=False)
     monkeypatch.delenv("AUDIO_ENHANCEMENT_ENABLED", raising=False)

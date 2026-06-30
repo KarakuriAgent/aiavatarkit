@@ -85,6 +85,9 @@ class Tool:
         self._on_completed: Callable = None
         self._on_submitted: Callable = None
         self._background_tasks: set = set()
+        self._background_futures: Dict[str, asyncio.Future] = {}
+        self._background_callback_tasks: Dict[str, asyncio.Task] = {}
+        self._background_metadata: Dict[str, dict] = {}
         self.immediate_message = immediate_message
         self.background_timeout = background_timeout
         self._response_formatter: Callable = None
@@ -97,6 +100,65 @@ class Tool:
     def on_submitted(self, func: Callable):
         self._on_submitted = func
         return func
+
+    def _track_background_future(self, task_id: str, task: asyncio.Future, metadata: dict):
+        self._background_futures[task_id] = task
+        self._background_metadata[task_id] = metadata
+
+        def cleanup(done_task):
+            if self._background_futures.get(task_id) is done_task:
+                self._background_futures.pop(task_id, None)
+                self._background_metadata.pop(task_id, None)
+
+        task.add_done_callback(cleanup)
+
+    def _track_background_callback_task(self, task_id: str, task: asyncio.Task):
+        self._background_callback_tasks[task_id] = task
+
+        def cleanup(done_task):
+            self._background_tasks.discard(done_task)
+            if self._background_callback_tasks.get(task_id) is done_task:
+                self._background_callback_tasks.pop(task_id, None)
+
+        task.add_done_callback(cleanup)
+
+    def get_background_task_metadata(self, task_id: str) -> Optional[dict]:
+        return self._background_metadata.get(task_id)
+
+    def cancel_background_tasks(
+        self,
+        *,
+        task_id: str = None,
+        session_id: str = None,
+        user_id: str = None,
+        context_id: str = None,
+    ) -> List[str]:
+        cancelled = []
+
+        for tid, task in list(self._background_futures.items()):
+            metadata = self._background_metadata.get(tid, {})
+            if task_id and tid != task_id:
+                continue
+            if session_id and metadata.get("session_id") != session_id:
+                continue
+            if user_id and metadata.get("user_id") != user_id:
+                continue
+            if context_id and metadata.get("context_id") != context_id:
+                continue
+
+            if not task.done():
+                task.cancel()
+                cancelled.append(tid)
+
+            callback_task = self._background_callback_tasks.get(tid)
+            if callback_task and not callback_task.done():
+                callback_task.cancel()
+
+            self._background_futures.pop(tid, None)
+            self._background_callback_tasks.pop(tid, None)
+            self._background_metadata.pop(tid, None)
+
+        return cancelled
 
     def response_formatter(self, func_or_none=None, *, continue_chain: bool = False):
         if callable(func_or_none):
@@ -327,6 +389,25 @@ The list of tools is as follows:
             tool_to_add.is_dynamic = is_dynamic
         self.tools[tool_to_add.name] = tool_to_add
 
+    def cancel_background_tasks(
+        self,
+        *,
+        task_id: str = None,
+        session_id: str = None,
+        user_id: str = None,
+        context_id: str = None,
+    ) -> List[str]:
+        cancelled = []
+        for tool in self.tools.values():
+            if hasattr(tool, "cancel_background_tasks"):
+                cancelled.extend(tool.cancel_background_tasks(
+                    task_id=task_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    context_id=context_id,
+                ))
+        return cancelled
+
     async def get_dynamic_tools(self, func):
         self._get_dynamic_tools = func
         return func
@@ -414,7 +495,10 @@ The list of tools is as follows:
                 bg_task = asyncio.create_task(tc.result.deferred_callback())
                 if tool:
                     tool._background_tasks.add(bg_task)
-                    bg_task.add_done_callback(tool._background_tasks.discard)
+                    if tc.result.task_id:
+                        tool._track_background_callback_task(tc.result.task_id, bg_task)
+                    else:
+                        bg_task.add_done_callback(tool._background_tasks.discard)
 
     async def execute_tool(self, name: str, arguments: dict, metadata: dict) -> AsyncGenerator[ToolCallResult, None]:
         tool = self.tools[name]
@@ -456,12 +540,16 @@ The list of tools is as follows:
                         yield ToolCallResult(data=result)
                     return
 
+            tool._track_background_future(task_id, task, _metadata)
+
             # Immediate background or timed-out: defer callback to avoid race condition
             # The caller must invoke deferred_callback after tool output response completes
             async def _wait_and_callback():
                 try:
                     result = await task
                     await tool._on_completed(result, _metadata)
+                except asyncio.CancelledError:
+                    return
                 except Exception:
                     logger.exception(f"Error in background tool execution: {name}")
                     await tool._on_completed(None, _metadata)

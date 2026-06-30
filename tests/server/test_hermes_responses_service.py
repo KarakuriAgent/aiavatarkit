@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 
 from server.config import load_settings
@@ -21,6 +22,26 @@ class FakeStreamResponse:
         yield "data: [DONE]"
 
 
+class FakeDelegationStreamResponse:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        yield "event: response.output_text.delta"
+        yield 'data: {"type": "response.output_text.delta", "delta": "queued"}'
+        yield "event: hermes.delegation.created"
+        yield 'data: {"id": "deleg_123", "status": "queued", "links": {"status": "/v1/delegations/deleg_123"}}'
+        yield "event: response.completed"
+        yield 'data: {"type": "response.completed", "response": {"id": "resp_123", "hermes_delegation": {"id": "deleg_123", "status": "queued"}}}'
+        yield "data: [DONE]"
+
+
 async def collect_request_body(
     monkeypatch,
     reasoning_effort=None,
@@ -31,8 +52,9 @@ async def collect_request_body(
     captured = {}
 
     class FakeClient:
-        def __init__(self, timeout=None):
+        def __init__(self, timeout=None, headers=None):
             self.timeout = timeout
+            self.headers = headers
 
         async def __aenter__(self):
             return self
@@ -69,6 +91,56 @@ async def collect_request_body(
 
     assert "".join(response.text for response in responses) == "ok"
     return captured["json"]
+
+
+@pytest.mark.asyncio
+async def test_hermes_responses_service_emits_tool_call_for_sidecar_delegation(monkeypatch):
+    class FakeClient:
+        def __init__(self, timeout=None, headers=None):
+            self.timeout = timeout
+            self.headers = headers
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, headers, json):
+            return FakeDelegationStreamResponse()
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", FakeClient)
+
+    service = HermesResponsesService(
+        api_key="test-key",
+        base_url="http://hermes-sidecar:8768/v1",
+        model="sidecar",
+        delegation_poll_interval=999,
+    )
+    messages = await service.compose_messages("ctx", "user", "hello")
+
+    responses = [
+        response
+        async for response in service.get_llm_stream_response(
+            "ctx",
+            "user",
+            messages,
+            session_id="session-1",
+            channel="voice",
+        )
+    ]
+
+    assert "".join(response.text or "" for response in responses) == "queued"
+    tool_calls = [response.tool_call for response in responses if response.tool_call]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "hermes_delegation"
+    assert tool_calls[0].result.task_id == "deleg_123"
+    running = service.delegation_tracker.get_running_task("deleg_123")
+    assert running["session_id"] == "session-1"
+    assert running["request"] == "[channel:voice]hello"
+
+    service.cancel_background_tasks(task_id="deleg_123")
+    await asyncio.sleep(0)
 
 
 def request_input_text(request_body):

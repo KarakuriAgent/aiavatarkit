@@ -1,9 +1,12 @@
 import asyncio
+import json
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from aiavatar.sts.llm.base import ToolCall, ToolCallResult
 from aiavatar.sts.models import STSResponse
 from aiavatar.adapter.websocket.server import AIAvatarWebSocketServer, WebSocketSessionData
-from aiavatar.adapter.models import AIAvatarResponse
+from aiavatar.adapter.models import AIAvatarRequest, AIAvatarResponse
 
 
 class MockWebSocket:
@@ -23,6 +26,7 @@ def create_server_with_session(session_id: str, **kwargs):
     server.websockets = {}
     server.debug = kwargs.get("debug", False)
     server.response_audio_chunk_size = kwargs.get("response_audio_chunk_size", 512)
+    server.tool_progress_interval = kwargs.get("tool_progress_interval", 5.0)
     server._on_response_handlers = []
     server.control_tag_pattern = r'\[{tag}:(\w+)\]|<{tag}\s[^>]*{attr}=["\'](\w+)["\']'
 
@@ -36,6 +40,85 @@ def create_server_with_session(session_id: str, **kwargs):
     server.websockets[session_id] = ws
 
     return server, session_data, ws
+
+
+class FakeLLM:
+    def __init__(self):
+        self.cancelled_sessions = []
+        self.tools = {}
+
+    def cancel_background_tasks(self, **kwargs):
+        self.cancelled_sessions.append(kwargs)
+        return ["tool-task-1"]
+
+
+class FakeSTS:
+    def __init__(self):
+        self.llm = FakeLLM()
+        self.cancelled_sessions = []
+
+    async def cancel_session(self, session_id: str):
+        self.cancelled_sessions.append(session_id)
+        return "cancelled-transaction"
+
+
+class FakeProgressTool:
+    def __init__(self):
+        self.metadata = {"task_id": "tool-task-1", "session_id": "test_session"}
+        self.running_task = {
+            "task_id": "tool-task-1",
+            "request": "search",
+            "progress": "Start processing...\n",
+            "report_channel": None,
+        }
+
+    def get_background_task_metadata(self, task_id: str):
+        if task_id == "tool-task-1":
+            return self.metadata
+        return None
+
+    def get_running_task(self, task_id: str):
+        if task_id == "tool-task-1":
+            return self.running_task
+        return None
+
+
+def test_audio_invoke_without_text_defaults_to_ptt_metadata():
+    request = AIAvatarRequest(
+        type="invoke",
+        session_id="session-1",
+        audio_data="base64-audio",
+    )
+
+    metadata = AIAvatarWebSocketServer._metadata_for_invoke_request(request)
+
+    assert metadata == {"input_mode": "ptt"}
+
+
+def test_invoke_metadata_preserves_explicit_input_mode():
+    request = AIAvatarRequest(
+        type="invoke",
+        session_id="session-1",
+        text="hello",
+        audio_data="base64-audio",
+        metadata={"input_mode": "manual", "barge_in_enabled": False},
+    )
+
+    metadata = AIAvatarWebSocketServer._metadata_for_invoke_request(request)
+
+    assert metadata == {"input_mode": "manual", "barge_in_enabled": False}
+
+
+def test_text_invoke_without_audio_does_not_default_to_ptt():
+    request = AIAvatarRequest(
+        type="invoke",
+        session_id="session-1",
+        text="hello",
+    )
+
+    metadata = AIAvatarWebSocketServer._metadata_for_invoke_request(request)
+
+    assert metadata is None
 
 
 @pytest.mark.asyncio
@@ -296,3 +379,82 @@ async def test_audio_chunk_loop_breaks_on_transaction_change():
     # (would be 1 + 6 without break since 512/100 = 6 chunks)
     assert send_count < 7, f"Expected early break but sent {send_count} messages"
     assert send_count == 3, f"Expected 3 sends (1 initial + 2 chunks before break), got {send_count}"
+
+
+@pytest.mark.asyncio
+async def test_cancel_current_processing_cancels_session_work():
+    session_id = "test_session"
+    server, session_data, ws = create_server_with_session(session_id)
+    server.sts = FakeSTS()
+
+    async def never():
+        await asyncio.Event().wait()
+
+    invoke_task = asyncio.create_task(never())
+    session_data.invoke_tasks.add(invoke_task)
+
+    result = await server.cancel_current_processing(session_id, context_id="ctx_1")
+    await asyncio.sleep(0)
+
+    assert result == {
+        "cancel_transaction_id": "cancelled-transaction",
+        "cancelled_tool_task_ids": ["tool-task-1"],
+    }
+    assert invoke_task.cancelled()
+    assert session_data.active_transaction_id == "cancelled-transaction"
+    assert server.sts.cancelled_sessions == [session_id]
+    assert server.sts.llm.cancelled_sessions == [{"session_id": session_id}]
+
+    messages = [json.loads(message) for message in ws.sent_messages]
+    assert [message["type"] for message in messages] == ["stop", "cancelled"]
+    assert messages[1]["metadata"]["reason"] == "client_cancelled"
+    assert messages[1]["metadata"]["cancelled_tool_task_ids"] == ["tool-task-1"]
+
+
+@pytest.mark.asyncio
+async def test_tool_progress_heartbeat_sent_for_background_tool():
+    session_id = "test_session"
+    server, session_data, ws = create_server_with_session(
+        session_id,
+        tool_progress_interval=0.01,
+    )
+    tool = FakeProgressTool()
+    server.sts = SimpleNamespace(
+        llm=SimpleNamespace(tools={"send_query_to_openclaw": tool})
+    )
+
+    await server.handle_response(STSResponse(
+        type="tool_call",
+        session_id=session_id,
+        user_id="user_1",
+        context_id="ctx_1",
+        tool_call=ToolCall(
+            id="call_1",
+            name="send_query_to_openclaw",
+            arguments='{"query": "search"}',
+            result=ToolCallResult(
+                data={"message": "Accepted.", "task_id": "tool-task-1"},
+                task_id="tool-task-1",
+            ),
+        ),
+    ))
+
+    await asyncio.sleep(0.03)
+
+    messages = [json.loads(message) for message in ws.sent_messages]
+    progress_messages = [
+        message for message in messages
+        if message["type"] == "tool_progress"
+    ]
+    assert progress_messages
+    assert progress_messages[-1]["metadata"] == {
+        "task_id": "tool-task-1",
+        "tool_name": "send_query_to_openclaw",
+        "status": "running",
+        "request": "search",
+        "progress": "Start processing...\n",
+        "report_channel": None,
+    }
+
+    for task in list(session_data.tool_progress_tasks.values()):
+        task.cancel()

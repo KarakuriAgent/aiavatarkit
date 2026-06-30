@@ -33,6 +33,7 @@ from .wakeword import StreamingWakewordDetector
 logger = logging.getLogger(__name__)
 
 LANGUAGE_PATTERN = re.compile(r"""\[(?:lang|language):([a-zA-Z-]+)\]|<(?:lang|language)\s[^>]*code=["']([a-zA-Z-]+)["']""")
+PTT_INPUT_MODE = "ptt"
 
 
 class STSPipeline:
@@ -78,6 +79,9 @@ class STSPipeline:
         voice_auth: VoiceAuthenticator = None,
         addressing_detector: AddressingDetector = None,
         addressing_history_limit: int = 12,
+        ptt_voice_auth_enabled: bool = True,
+        ptt_wakeword_enabled: bool = False,
+        ptt_addressing_enabled: bool = False,
         invoke_queue_idle_timeout: float = 10.0,
         invoke_timeout: float = 60.0,
         use_invoke_queue: bool = False,
@@ -251,6 +255,11 @@ class STSPipeline:
         self.addressing_rejection_window = 60.0
         self._addressing_rejections: dict[str, List[float]] = {}
 
+        # Push-to-talk request gate policy
+        self.ptt_voice_auth_enabled = ptt_voice_auth_enabled
+        self.ptt_wakeword_enabled = ptt_wakeword_enabled
+        self.ptt_addressing_enabled = ptt_addressing_enabled
+
         # User custom logic
         self._on_before_llm_handlers = []
         self._on_before_tts_handlers = []
@@ -279,6 +288,9 @@ class STSPipeline:
             "audio_enhancement_fail_open": self.audio_enhancement_fail_open,
             "audio_enhancement_record_raw": self.audio_enhancement_record_raw,
             "audio_enhancement_record_enhanced": self.audio_enhancement_record_enhanced,
+            "ptt_voice_auth_enabled": self.ptt_voice_auth_enabled,
+            "ptt_wakeword_enabled": self.ptt_wakeword_enabled,
+            "ptt_addressing_enabled": self.ptt_addressing_enabled,
             "addressing_history_limit": self.addressing_history_limit,
             "invoke_queue_idle_timeout": self.invoke_queue_idle_timeout,
             "invoke_timeout": self.invoke_timeout,
@@ -342,6 +354,13 @@ class STSPipeline:
         return self.get_wakeword_decision(request, last_request_at)["accepted"]
 
     def get_wakeword_decision(self, request: STSRequest, last_request_at: datetime) -> dict:
+        if not self._is_gate_enabled_for_request(request, "wakeword"):
+            return {
+                "enabled": False,
+                "accepted": True,
+                "reason": "ptt_gate_disabled",
+            }
+
         audio_decision = self._get_audio_wakeword_decision(request)
 
         if not self.wakewords and not audio_decision:
@@ -405,6 +424,8 @@ class STSPipeline:
         return decision
 
     def _detect_audio_wakeword(self, request: STSRequest, sample_rate: int):
+        if not self._is_gate_enabled_for_request(request, "wakeword"):
+            return
         if not self.audio_wakeword_detector or not request.audio_data:
             return
 
@@ -425,6 +446,32 @@ class STSPipeline:
             **(request.metadata or {}),
             **(metadata or {}),
         }
+
+    def _is_ptt_request(self, request: STSRequest) -> bool:
+        return (request.metadata or {}).get("input_mode") == PTT_INPUT_MODE
+
+    def _ptt_gate_policy(self) -> dict:
+        return {
+            "voice_auth": self.ptt_voice_auth_enabled,
+            "wakeword": self.ptt_wakeword_enabled,
+            "addressing": self.ptt_addressing_enabled,
+        }
+
+    def _is_gate_enabled_for_request(self, request: STSRequest, gate_name: str) -> bool:
+        if not self._is_ptt_request(request):
+            return True
+        return bool(self._ptt_gate_policy().get(gate_name, True))
+
+    def _annotate_ptt_gate_policy(self, request: STSRequest):
+        if not self._is_ptt_request(request):
+            return
+        request.metadata = request.metadata or {}
+        request.metadata["ptt_gate_policy"] = self._ptt_gate_policy()
+
+    def _is_voice_auth_required(self, request: STSRequest) -> bool:
+        if not self.voice_auth or not request.audio_data:
+            return False
+        return self._is_gate_enabled_for_request(request, "voice_auth")
 
     def _apply_pre_pipeline_timings(
         self,
@@ -505,6 +552,8 @@ class STSPipeline:
             return False
         if not request.audio_data:
             return False
+        if not self._is_gate_enabled_for_request(request, "addressing"):
+            return False
         if request.metadata and request.metadata.get("skip_addressing"):
             return False
         return True
@@ -572,6 +621,16 @@ class STSPipeline:
         state = await self.session_state_manager.get_session_state(session_id)
         return state.active_transaction_id == transaction_id, state.active_transaction_id
 
+    async def cancel_session(self, session_id: str) -> str:
+        state = await self.session_state_manager.get_session_state(session_id)
+        cancel_transaction_id = f"cancelled:{uuid4()}"
+        await self.session_state_manager.update_transaction(
+            session_id,
+            cancel_transaction_id,
+            state.timestamp_inserted_at,
+        )
+        return cancel_transaction_id
+
     async def invoke(self, request: STSRequest) -> AsyncGenerator[STSResponse, None]:
         if self.use_invoke_queue:
             async for response in self._invoke_queued(request):
@@ -591,6 +650,7 @@ class STSPipeline:
             transaction_id = str(uuid4())
             suppress_adapter_response = (request.metadata or {}).get("suppress_adapter_response") is True
             audio_sample_rate = self._request_audio_sample_rate()
+            self._annotate_ptt_gate_policy(request)
             performance = PerformanceRecord(
                 transaction_id=transaction_id,
                 user_id=request.user_id,
@@ -668,7 +728,7 @@ class STSPipeline:
                         )
                         return
 
-            if self.voice_auth and request.audio_data:
+            if self._is_voice_auth_required(request):
                 try:
                     phase_started_at = time()
                     voice_auth_result = await self.voice_auth.verify(
@@ -964,6 +1024,8 @@ class STSPipeline:
                     transaction_id=transaction_id,
                     metadata={
                         "block_barge_in": request.block_barge_in,
+                        **({"input_mode": request.metadata["input_mode"]} if request.metadata and "input_mode" in request.metadata else {}),
+                        **({"ptt_gate_policy": request.metadata["ptt_gate_policy"]} if request.metadata and "ptt_gate_policy" in request.metadata else {}),
                         **({"audio_enhancement": request.metadata["audio_enhancement"]} if request.metadata and "audio_enhancement" in request.metadata else {}),
                         **({"voice_auth": request.metadata["voice_auth"]} if request.metadata and "voice_auth" in request.metadata else {}),
                         **({"wakeword": request.metadata["wakeword"]} if request.metadata and "wakeword" in request.metadata else {}),

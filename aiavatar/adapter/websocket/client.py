@@ -72,6 +72,13 @@ class AIAvatarWebSocketClient(AIAvatarClientBase):
                 "audio_data": b64_data
             }))
 
+    async def cancel_current_processing(self, session_id: str, reason: str = "client_cancelled"):
+        await self.websocket_connection.send(json.dumps({
+            "type": "cancel",
+            "session_id": session_id,
+            "metadata": {"reason": reason},
+        }))
+
     # Receive WebSocket messages
     async def receive_websocket_worker(self):
         while True:

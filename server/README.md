@@ -375,6 +375,18 @@ ADDRESSING_MIN_CONFIDENCE=0
 
 addressing は音声データ付きのリクエストだけに適用されます。Discord gateway、`/conversation` の text delivery、`/avatar/speak` は明示入力なので bypass されます。`/avatar/perform` は会話 LLM を通らないため、`chat_histories` にも入りません。
 
+## Push-to-Talk Gate Policy
+
+PTT は録音済み音声を `invoke` request として送る前提です。クライアントが `metadata.input_mode=ptt` を付けた場合、通常音声とは別のゲート設定を使います。互換性のため、`input_mode` 未指定でも `text` なしの音声 `invoke` は PTT として扱います。VAD はストリーミング音声を区切る前段なので、この PTT ポリシーには含めません。
+
+```env
+PTT_VOICE_AUTH_ENABLED=true
+PTT_WAKEWORD_ENABLED=false
+PTT_ADDRESSING_ENABLED=false
+```
+
+`PTT_*_ENABLED` は、既に設定済みの provider を PTT リクエストで使うかどうかを切り替えます。たとえば `VOICE_AUTH_ENABLED=false` で voice auth provider が作られていない場合、`PTT_VOICE_AUTH_ENABLED=true` だけでは話者認証は実行されません。
+
 ## Discord Sync
 
 Discord チャンネルに StackChan との音声会話ログを流し、同じ Hermes conversation に Discord からもテキストで問い合わせる場合は Discord sync を有効化します。
